@@ -753,12 +753,12 @@ function doAttack(pi) {
     popDmg(op.x + op.w / 2, op.y, dmg, mv.ic || ch.col, ch.col);
     // Particelle limitate: max 8 per colpo normale
     spawnHitParticles(op.x + op.w / 2, op.y + op.h / 2, ch.col, 8);
-    shake = Math.min(0.4, dmg * 0.014);
-    hitstopFrames = Math.min(6, Math.round(dmg * 0.3));
+    // Shake potenziato per compensare la rimozione del freeze (hitstop)
+    shake = Math.min(0.65, dmg * 0.022);
     if (pp.combo >= 3) {
       flt(pp.combo + 'x ' + mv.ic, op.x, op.y - 36, '#ff4422');
       addPfx({ type: 'shockwave', x: op.x + op.w / 2, y: op.y + op.h / 2, r: 0, maxR: 115, life: 0.38, col: ch.col });
-      shake = 0.55; hitstopFrames = 8;
+      shake = 0.85; // Shake forte per combo, senza freeze
     }
   }
 }
@@ -794,7 +794,7 @@ function doWeaponAttack(pi) {
       spawnHitParticles(op.x + op.w / 2, op.y + op.h / 2, d.col, 10);
       pp.pCharge = Math.min(1, pp.pCharge + 2 / POWER_HITS); updPBar(pi);
       addPfx({ type: 'shockwave', x: op.x + op.w / 2, y: op.y + op.h / 2, r: 0, maxR: 85, life: 0.28, col: d.col });
-      shake = Math.min(0.36, d.dmg * 0.012); hitstopFrames = 5;
+      shake = Math.min(0.55, d.dmg * 0.018); // Shake potenziato, senza freeze
     }
   }
   w.dur--;
@@ -1108,7 +1108,7 @@ function updProjectiles(dt) {
       if (pr.type === 'bomb') addPfx({ type: 'shockwave', x: pr.x, y: pr.y, r: 0, maxR: 175, life: 0.45, col: '#ff4422' });
       p[pr.owner].pCharge = Math.min(1, p[pr.owner].pCharge + 2 / POWER_HITS);
       updPBar(pr.owner);
-      shake = Math.min(0.35, pr.dmg * 0.012); hitstopFrames = 4;
+      shake = Math.min(0.50, pr.dmg * 0.018); // Shake potenziato, senza freeze
       projs.splice(i, 1); continue;
     }
 
@@ -1276,79 +1276,172 @@ function initStars() {
   }
 }
 
-/** Disegna lo sfondo: gradiente, griglia prospettica, stelle e nebbia */
+/** Disegna lo sfondo: gradiente stilizzato neon, griglia prospettica, stelle e nebbia */
 function drawBg() {
   const W = cv.width, H = cv.height;
-  const g = cx.createRadialGradient(W * 0.5, H * 0.3, 0, W * 0.5, H * 0.3, W * 0.88);
-  g.addColorStop(0, '#14123a'); g.addColorStop(0.55, '#0a0820'); g.addColorStop(1, '#020210');
+  // Gradiente base stilizzato — viola/indaco profondo con riflessi neon
+  const g = cx.createRadialGradient(W * 0.5, H * 0.22, 0, W * 0.5, H * 0.5, W * 1.1);
+  g.addColorStop(0,   '#1e1060');
+  g.addColorStop(0.3, '#120840');
+  g.addColorStop(0.65,'#0c0530');
+  g.addColorStop(1,   '#060220');
   cx.fillStyle = g; cx.fillRect(0, 0, W, H);
 
-  // Griglia prospettica 3D
-  cx.save(); cx.globalAlpha = 0.055 + 0.022 * Math.sin(bgT * 0.65);
-  cx.strokeStyle = '#4488ff'; cx.lineWidth = 0.8;
-  const fY = H * 0.76, vY = H * 0.42;
-  for (let i = 0; i < 12; i++) {
-    const t = i / 12, y = fY + (H - fY) * t, sp = (y - vY) / (H - vY) * W * 0.76;
+  // Alone colorato centrale (aurora)
+  const aur = cx.createRadialGradient(W * 0.5, H * 0.35, 0, W * 0.5, H * 0.35, W * 0.55);
+  aur.addColorStop(0,   `rgba(80,40,200,${0.18 + 0.06 * Math.sin(bgT * 0.4)})`);
+  aur.addColorStop(0.5, `rgba(40,80,180,${0.10 + 0.04 * Math.sin(bgT * 0.3)})`);
+  aur.addColorStop(1,   'rgba(0,0,0,0)');
+  cx.fillStyle = aur; cx.fillRect(0, 0, W, H);
+
+  // Griglia prospettica 3D — colore neon coerente con lo stile
+  cx.save();
+  const gridAlpha = 0.10 + 0.04 * Math.sin(bgT * 0.65);
+  cx.globalAlpha = gridAlpha;
+  const fY = H * 0.76, vY = H * 0.38;
+  // Linee orizzontali con gradiente colore
+  for (let i = 0; i < 14; i++) {
+    const t = i / 14, y = fY + (H - fY) * t;
+    const sp = (y - vY) / (H - vY) * W * 0.82;
+    const hue = 220 + t * 40;
+    cx.strokeStyle = `hsl(${hue},90%,65%)`;
+    cx.lineWidth = 0.6 + t * 0.5;
     cx.beginPath(); cx.moveTo(W / 2 - sp, y); cx.lineTo(W / 2 + sp, y); cx.stroke();
   }
-  for (let i = -10; i <= 10; i++) {
-    cx.beginPath(); cx.moveTo(W / 2, vY); cx.lineTo(W / 2 + i * (W * 0.086), H); cx.stroke();
+  // Linee verticali convergenti
+  for (let i = -12; i <= 12; i++) {
+    const hue = 200 + Math.abs(i) * 5;
+    cx.strokeStyle = `hsl(${hue},85%,60%)`;
+    cx.lineWidth = 0.5;
+    cx.beginPath(); cx.moveTo(W / 2, vY); cx.lineTo(W / 2 + i * (W * 0.09), H); cx.stroke();
   }
   cx.globalAlpha = 1; cx.restore();
 
-  // Stelle in movimento
+  // Stelle in movimento — più luminose e colorate
   stars.forEach(s => {
     s.x += s.vx; if (s.x < -5) s.x = W + 5; if (s.x > W + 5) s.x = -5;
     const a = s.al * (0.5 + 0.5 * Math.sin(bgT * s.sp + s.ph));
-    cx.fillStyle = `rgba(200,220,255,${a})`; cx.beginPath(); cx.arc(s.x, s.y, s.r, 0, Math.PI * 2); cx.fill();
+    const hue = 180 + (s.ph * 60) % 120;
+    cx.fillStyle = `hsla(${hue},80%,85%,${a})`;
+    cx.beginPath(); cx.arc(s.x, s.y, s.r, 0, Math.PI * 2); cx.fill();
   });
 
-  // Nebbia al suolo
-  const bot = cx.createLinearGradient(0, H * 0.68, 0, H);
-  bot.addColorStop(0, 'rgba(0,50,120,0)'); bot.addColorStop(1, 'rgba(0,20,60,.38)');
-  cx.fillStyle = bot; cx.fillRect(0, H * 0.68, W, H * 0.32);
+  // Nebbia al suolo — colore neon coerente
+  const bot = cx.createLinearGradient(0, H * 0.65, 0, H);
+  bot.addColorStop(0, 'rgba(30,10,100,0)');
+  bot.addColorStop(0.5,'rgba(20,5,80,0.22)');
+  bot.addColorStop(1,  'rgba(10,0,50,0.55)');
+  cx.fillStyle = bot; cx.fillRect(0, H * 0.65, W, H * 0.35);
 
-  // Vignette laterali di pericolo
-  const dL = cx.createLinearGradient(0, 0, W * 0.07, 0);
-  dL.addColorStop(0, 'rgba(255,50,0,.18)'); dL.addColorStop(1, 'rgba(255,50,0,0)');
-  cx.fillStyle = dL; cx.fillRect(0, 0, W * 0.07, H);
-  const dR = cx.createLinearGradient(W * 0.93, 0, W, 0);
-  dR.addColorStop(0, 'rgba(255,50,0,0)'); dR.addColorStop(1, 'rgba(255,50,0,.18)');
-  cx.fillStyle = dR; cx.fillRect(W * 0.93, 0, W * 0.07, H);
+  // Linea orizzonte luminosa
+  const hor = cx.createLinearGradient(W * 0.1, 0, W * 0.9, 0);
+  hor.addColorStop(0,   'rgba(80,120,255,0)');
+  hor.addColorStop(0.2, `rgba(100,160,255,${0.18 + 0.08 * Math.sin(bgT * 0.7)})`);
+  hor.addColorStop(0.5, `rgba(140,100,255,${0.28 + 0.10 * Math.sin(bgT * 0.5)})`);
+  hor.addColorStop(0.8, `rgba(100,160,255,${0.18 + 0.08 * Math.sin(bgT * 0.7)})`);
+  hor.addColorStop(1,   'rgba(80,120,255,0)');
+  cx.fillStyle = hor;
+  cx.fillRect(W * 0.05, H * 0.74 - 1.5, W * 0.9, 3);
+
+  // Vignette laterali di pericolo — neon rosso/viola
+  const dL = cx.createLinearGradient(0, 0, W * 0.08, 0);
+  dL.addColorStop(0, 'rgba(200,20,120,.22)'); dL.addColorStop(1, 'rgba(200,20,120,0)');
+  cx.fillStyle = dL; cx.fillRect(0, 0, W * 0.08, H);
+  const dR = cx.createLinearGradient(W * 0.92, 0, W, 0);
+  dR.addColorStop(0, 'rgba(200,20,120,0)'); dR.addColorStop(1, 'rgba(200,20,120,.22)');
+  cx.fillStyle = dR; cx.fillRect(W * 0.92, 0, W * 0.08, H);
+
+  // Particelle di sfondo fluttuanti (neon)
+  cx.save();
+  for (let i = 0; i < 8; i++) {
+    const px = W * (0.1 + 0.1 * i + 0.04 * Math.sin(bgT * 0.3 + i * 1.2));
+    const py = H * (0.15 + 0.08 * Math.sin(bgT * 0.25 + i * 0.8));
+    const hue = 200 + i * 20;
+    cx.fillStyle = `hsla(${hue},90%,70%,${0.06 + 0.03 * Math.sin(bgT + i)})`;
+    cx.shadowBlur = 18; cx.shadowColor = `hsl(${hue},90%,70%)`;
+    cx.beginPath(); cx.arc(px, py, 3 + 2 * Math.sin(bgT * 0.5 + i), 0, Math.PI * 2); cx.fill();
+  }
+  cx.shadowBlur = 0; cx.globalAlpha = 1; cx.restore();
 }
 
 /* ============================================================
    RENDERING PIATTAFORME
 ============================================================ */
 
-/** Disegna tutte le piattaforme con effetto 3D e bordo luminoso */
+/** Disegna tutte le piattaforme con effetto 3D neon e bordo luminoso stilizzato */
 function drawPlatforms() {
   getPlats().forEach(pl => {
     cx.save();
-    const depth = pl.main ? 18 : 11;
-    // Faccia inferiore 3D
+    const depth = pl.main ? 20 : 12;
+    const pulse = 0.03 + 0.015 * Math.sin(bgT * 1.8 + pl.x * 0.008);
+
+    // Faccia inferiore 3D — colore viola/indaco neon
     const g3 = cx.createLinearGradient(pl.x, pl.y + pl.h, pl.x, pl.y + pl.h + depth);
-    g3.addColorStop(0, pl.main ? '#0d2050' : '#101e40'); g3.addColorStop(1, 'rgba(0,0,0,.05)');
+    g3.addColorStop(0, pl.main ? '#1a0a50' : '#150840');
+    g3.addColorStop(1, 'rgba(5,0,20,.08)');
     cx.fillStyle = g3;
-    cx.beginPath(); cx.moveTo(pl.x, pl.y + pl.h); cx.lineTo(pl.x + pl.w, pl.y + pl.h); cx.lineTo(pl.x + pl.w, pl.y + pl.h + depth); cx.lineTo(pl.x, pl.y + pl.h + depth); cx.fill();
-    // Faccia destra
-    cx.fillStyle = pl.main ? '#091638' : '#0b1a30';
-    cx.beginPath(); cx.moveTo(pl.x + pl.w, pl.y); cx.lineTo(pl.x + pl.w + 4, pl.y + 4); cx.lineTo(pl.x + pl.w + 4, pl.y + pl.h + depth + 4); cx.lineTo(pl.x + pl.w, pl.y + pl.h + depth); cx.lineTo(pl.x + pl.w, pl.y); cx.fill();
-    // Superficie superiore
-    cx.shadowBlur = pl.main ? 26 : 16; cx.shadowColor = pl.main ? 'rgba(80,140,255,.48)' : 'rgba(80,140,255,.32)';
-    const g = cx.createLinearGradient(pl.x, pl.y, pl.x, pl.y + pl.h * 1.8);
-    if (pl.main) { g.addColorStop(0, '#1e4a8c'); g.addColorStop(0.35, '#133366'); g.addColorStop(1, '#080e28'); }
-    else { g.addColorStop(0, '#245590'); g.addColorStop(1, '#0d2a52'); }
-    cx.fillStyle = g; cx.beginPath(); cx.roundRect(pl.x, pl.y, pl.w, pl.h, 4); cx.fill();
-    // Bordo superiore luminoso
+    cx.beginPath(); cx.moveTo(pl.x, pl.y + pl.h); cx.lineTo(pl.x + pl.w, pl.y + pl.h);
+    cx.lineTo(pl.x + pl.w, pl.y + pl.h + depth); cx.lineTo(pl.x, pl.y + pl.h + depth); cx.fill();
+
+    // Faccia destra — ombra laterale neon
+    cx.fillStyle = pl.main ? '#0f0535' : '#0d0428';
+    cx.beginPath(); cx.moveTo(pl.x + pl.w, pl.y); cx.lineTo(pl.x + pl.w + 4, pl.y + 4);
+    cx.lineTo(pl.x + pl.w + 4, pl.y + pl.h + depth + 4);
+    cx.lineTo(pl.x + pl.w, pl.y + pl.h + depth); cx.lineTo(pl.x + pl.w, pl.y); cx.fill();
+
+    // Superficie superiore — gradiente neon viola/blu
+    const glowCol = pl.main ? 'rgba(120,80,255,.55)' : 'rgba(100,60,220,.40)';
+    cx.shadowBlur = pl.main ? 28 : 18; cx.shadowColor = glowCol;
+    const g = cx.createLinearGradient(pl.x, pl.y, pl.x, pl.y + pl.h * 2);
+    if (pl.main) {
+      g.addColorStop(0,   '#3a1a8c');
+      g.addColorStop(0.3, '#261060');
+      g.addColorStop(1,   '#0e0530');
+    } else {
+      g.addColorStop(0,   '#4020a0');
+      g.addColorStop(0.4, '#2a1270');
+      g.addColorStop(1,   '#120840');
+    }
+    cx.fillStyle = g;
+    cx.beginPath(); cx.roundRect(pl.x, pl.y, pl.w, pl.h, pl.main ? 5 : 6); cx.fill();
+
+    // Pattern a righe luminose sulla superficie
+    if (pl.main) {
+      cx.save();
+      cx.globalAlpha = 0.06 + 0.02 * Math.sin(bgT * 1.5);
+      for (let xi = 0; xi < pl.w; xi += 32) {
+        cx.fillStyle = `rgba(180,120,255,0.5)`;
+        cx.fillRect(pl.x + xi, pl.y, 1, pl.h);
+      }
+      cx.globalAlpha = 1; cx.restore();
+    }
+
+    // Bordo superiore luminoso neon
     const eg = cx.createLinearGradient(pl.x, 0, pl.x + pl.w, 0);
-    eg.addColorStop(0, 'rgba(100,180,255,0)'); eg.addColorStop(0.12, 'rgba(100,180,255,.95)');
-    eg.addColorStop(0.88, 'rgba(100,180,255,.95)'); eg.addColorStop(1, 'rgba(100,180,255,0)');
-    cx.strokeStyle = eg; cx.lineWidth = pl.main ? 2.5 : 2; cx.shadowBlur = 18; cx.shadowColor = 'rgba(100,180,255,.7)';
-    cx.beginPath(); cx.moveTo(pl.x + 7, pl.y); cx.lineTo(pl.x + pl.w - 7, pl.y); cx.stroke();
-    // Bagliore interno animato
-    cx.fillStyle = `rgba(100,180,255,${0.03 + 0.015 * Math.sin(bgT * 2 + pl.x * 0.01)})`;
-    cx.beginPath(); cx.roundRect(pl.x, pl.y, pl.w, pl.h, 4); cx.fill();
+    const edgeCol = pl.main ? '160,100,255' : '140,80,240';
+    eg.addColorStop(0,    `rgba(${edgeCol},0)`);
+    eg.addColorStop(0.08, `rgba(${edgeCol},.98)`);
+    eg.addColorStop(0.5,  `rgba(${edgeCol},1)`);
+    eg.addColorStop(0.92, `rgba(${edgeCol},.98)`);
+    eg.addColorStop(1,    `rgba(${edgeCol},0)`);
+    cx.strokeStyle = eg;
+    cx.lineWidth = pl.main ? 2.8 : 2.2;
+    cx.shadowBlur = 20; cx.shadowColor = `rgba(${edgeCol},.8)`;
+    cx.beginPath(); cx.moveTo(pl.x + 8, pl.y); cx.lineTo(pl.x + pl.w - 8, pl.y); cx.stroke();
+
+    // Bagliore interno pulsante
+    cx.fillStyle = `rgba(160,100,255,${pulse})`;
+    cx.beginPath(); cx.roundRect(pl.x, pl.y, pl.w, pl.h, pl.main ? 5 : 6); cx.fill();
+
+    // Piccoli punti luminosi ai bordi della piattaforma principale
+    if (pl.main) {
+      cx.shadowBlur = 10; cx.shadowColor = 'rgba(200,150,255,.9)';
+      cx.fillStyle = `rgba(200,150,255,${0.5 + 0.3 * Math.sin(bgT * 2)})`;
+      [0.08, 0.5, 0.92].forEach(fx => {
+        cx.beginPath(); cx.arc(pl.x + pl.w * fx, pl.y, 3, 0, Math.PI * 2); cx.fill();
+      });
+    }
+
     cx.shadowBlur = 0; cx.restore();
   });
 }
@@ -1391,13 +1484,24 @@ function lerpColor(hex, amt) {
 
 /**
  * Disegna un giocatore con corpo articolato, animazioni e effetti visivi.
+ * Supporta il gigantismo di Bolly: scala visiva enorme.
  * @param {number} pi - Indice giocatore (0 o 1)
  */
 function drawPlayer(pi) {
   const pp = p[pi]; if (pp.isDead) return;
   // Lampeggio di invincibilità dopo il respawn
   if (pp.invincT > 0 && Math.floor(pp.invincT * 9) % 2 === 0) return;
-  const ch = pp.ch, PW = pp.w, PH = pp.h, bcx = pp.x + PW / 2, bcy = pp.y + PH / 2;
+
+  // Gigantismo di Bolly: scala visiva enormemente amplificata
+  const giantScale = pp.gigantScale || 1.0;
+  const isGiant    = giantScale > 1.05;
+
+  // Dimensioni effettive di rendering (scala visiva, non fisica)
+  const PW = pp.w * giantScale;
+  const PH = pp.h * giantScale;
+  // Centro del personaggio (basato sulla posizione fisica reale)
+  const bcx = pp.x + pp.w / 2;
+  const bcy = pp.y + pp.h / 2;
   const isAtk = pp.atkT > 0, anim = pp.atkAnim || '', kp = pp.atkProg;
   const isKick = anim.includes('kick'), isPunch = anim === 'jab' || anim === 'hook', isSlide = anim === 'slide';
 
@@ -1429,12 +1533,25 @@ function drawPlayer(pi) {
 
   // Aura del personaggio
   cx.save();
-  cx.strokeStyle = ch.col; cx.lineWidth = 1.8; cx.globalAlpha = 0.06 + 0.04 * Math.sin(bgT * 2.5 + pi);
-  cx.shadowBlur = 14; cx.shadowColor = ch.col;
+  cx.strokeStyle = ch.col; cx.lineWidth = isGiant ? 4 : 1.8;
+  cx.globalAlpha = isGiant ? 0.22 + 0.10 * Math.sin(bgT * 3 + pi) : 0.06 + 0.04 * Math.sin(bgT * 2.5 + pi);
+  cx.shadowBlur = isGiant ? 40 : 14; cx.shadowColor = ch.col;
   cx.beginPath(); cx.ellipse(bcx, bcy, PW * 0.68, PH * 0.68, 0, 0, Math.PI * 2); cx.stroke();
+  if (isGiant) {
+    // Aura esterna extra per il gigantismo
+    cx.lineWidth = 2.5; cx.globalAlpha = 0.12 + 0.06 * Math.sin(bgT * 2);
+    cx.beginPath(); cx.ellipse(bcx, bcy, PW * 0.9, PH * 0.9, 0, 0, Math.PI * 2); cx.stroke();
+    // Testo GIGANTE sopra il personaggio
+    cx.font = 'bold 18px Nunito,sans-serif'; cx.textAlign = 'center'; cx.fillStyle = ch.col;
+    cx.globalAlpha = 0.85 + 0.15 * Math.sin(bgT * 4);
+    cx.shadowBlur = 20; cx.shadowColor = ch.col;
+    cx.fillText('GIGANTE!', bcx, bcy - PH * 0.72);
+  }
   cx.globalAlpha = 1; cx.shadowBlur = 0; cx.restore();
 
   cx.save(); cx.translate(bcx, bcy);
+  // Applica scala gigante al rendering del corpo
+  if (isGiant) cx.scale(giantScale, giantScale);
   if (pp.facing < 0) cx.scale(-1, 1);
   const sqX = 1 + pp.landSquash * 0.28, sqY = 1 - pp.landSquash * 0.18;
   cx.scale(sqX, sqY);
@@ -1443,18 +1560,21 @@ function drawPlayer(pi) {
   if (isSlide) bodyLean = 0.32;
   cx.rotate(bodyLean);
 
-  const BW = PW * 0.33, BH = PH * 0.43, LW = PW * 0.17, LH = PH * 0.34;
-  const AW = PW * 0.13, AH = PH * 0.22, HR = PW * 0.24;
+  // Usa le dimensioni fisiche base (non scalate) per il corpo,
+  // poiché la scala gigante è già applicata tramite cx.scale(giantScale)
+  const bW = pp.w, bH = pp.h;
+  const BW = bW * 0.33, BH = bH * 0.43, LW = bW * 0.17, LH = bH * 0.34;
+  const AW = bW * 0.13, AH = bH * 0.22, HR = bW * 0.24;
 
   // GAMBA POSTERIORE
-  cx.save(); cx.translate(-PW * 0.1, BH * 0.35); cx.rotate(pp.lLegA);
+  cx.save(); cx.translate(-bW * 0.1, BH * 0.35); cx.rotate(pp.lLegA);
   cx.fillStyle = lerpColor(ch.col, -0.24); cx.beginPath(); cx.roundRect(-LW / 2, 0, LW, LH * 0.55, 3); cx.fill();
   cx.fillStyle = ch.skin; cx.beginPath(); cx.roundRect(-LW / 2 + 1, LH * 0.52, LW - 2, LH * 0.48, 3); cx.fill();
   cx.fillStyle = lerpColor(ch.col, -0.4); cx.beginPath(); cx.roundRect(-LW / 2, LH * 0.88, LW + 5, LH * 0.18, 3); cx.fill();
   cx.restore();
 
   // GAMBA ANTERIORE
-  cx.save(); cx.translate(PW * 0.1, BH * 0.35);
+  cx.save(); cx.translate(bW * 0.1, BH * 0.35);
   let fLA = pp.rLegA;
   if (isKick) { const ka = kp < 0.6 ? (kp / 0.6) : (1 - (kp - 0.6) / 0.4); fLA = 0.4 - ka * 1.6; }
   cx.rotate(fLA);
@@ -1531,13 +1651,15 @@ function drawPlayer(pi) {
   }
   cx.restore();
 
-  // Emoji del personaggio sopra la testa
-  cx.font = `${PW * 0.52}px serif`; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.globalAlpha = 0.88;
-  cx.fillText(ch.em, 0, -BH * 0.65 - HR * 1.95 + hBob); cx.globalAlpha = 1;
+  // Emoji del personaggio sopra la testa (più grande durante il gigantismo)
+  const emSize = isGiant ? bW * 1.1 : bW * 0.52;
+  cx.font = `${emSize}px serif`; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.globalAlpha = 0.88;
+  if (isGiant) { cx.shadowBlur = 30; cx.shadowColor = ch.col; }
+  cx.fillText(ch.em, 0, -BH * 0.65 - HR * 1.95 + hBob); cx.globalAlpha = 1; cx.shadowBlur = 0;
 
   // Burst di impatto durante attacco
   if (isAtk && kp > 0.4 && kp < 0.7) {
-    const bx = isKick ? PW * 0.86 : PW * 0.7, by = isKick ? -PH * 0.12 : -BH * 0.26;
+    const bx = isKick ? bW * 0.86 : bW * 0.7, by = isKick ? -bH * 0.12 : -BH * 0.26;
     const br = isKick ? 28 : 20, ba = (1 - Math.abs(kp - 0.55) / 0.13) * 0.78;
     cx.fillStyle = ch.col; cx.globalAlpha = ba; cx.shadowBlur = 32; cx.shadowColor = ch.col;
     cx.beginPath(); cx.arc(bx, by, br, 0, Math.PI * 2); cx.fill();
@@ -1936,13 +2058,11 @@ function loop(ts) {
 
   if (!started) { pCx.clearRect(0, 0, pCv.width, pCv.height); justDown = {}; return; }
 
-  // Hitstop: congela la fisica sui colpi forti (effetto Smash Bros autentico)
+  // Hitstop: effetto visivo senza freeze della fisica
+  // Il freeze è stato rimosso per evitare la schermata congelata.
+  // L'effetto di impatto è ora gestito solo tramite screen shake e flash visivo.
   if (hitstopFrames > 0) {
-    hitstopFrames--;
-    cx.clearRect(0, 0, cv.width, cv.height);
-    drawBg(); drawPlatforms(); drawStageWeapons(); drawEffects(); drawProjectiles(); drawParticles();
-    drawPlayer(0); drawPlayer(1); drawRespawnIndicators(); drawOverlayFx();
-    justDown = {}; return;
+    hitstopFrames = 0; // Azzera immediatamente per non congelare mai
   }
 
   // Screen shake
