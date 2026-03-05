@@ -1,0 +1,21 @@
+{
+  "name": "battaglia-navale-smash-server",
+  "version": "1.0.0",
+  "description": "Backend Node.js per Battaglia Navale Smash multiplayer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["game", "multiplayer", "socket.io"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.5.4",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
