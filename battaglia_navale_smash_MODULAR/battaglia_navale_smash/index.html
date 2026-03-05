@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BATTAGLIA NAVALE SMASH</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============================================================
+     CANVAS OVERLAY EFFETTI (shockwave, raggi, scudi)
+============================================================ -->
+<canvas id="pfx-canvas"></canvas>
+
+<!-- ============================================================
+     OVERLAY ESPLOSIONE KO
+============================================================ -->
+<div id="expl-overlay"></div>
+
+<!-- ============================================================
+     EMOTE VINCITORE
+============================================================ -->
+<div id="win-emote">
+  <div class="win-em-txt" id="win-em-txt"></div>
+  <div class="win-em-icon" id="win-em-icon"></div>
+</div>
+
+<!-- ============================================================
+     KILL FEED — Notifiche KO in alto a destra
+============================================================ -->
+<div id="kill-feed"></div>
+
+<!-- ============================================================
+     ANNUNCIO POTERE — Banner centrale
+============================================================ -->
+<div id="pow-announce"><span id="pow-name-el"></span></div>
+
+<!-- ============================================================
+     ANNUNCIO CENTRALE (FIGHT!, ROUND, ecc.)
+============================================================ -->
+<div id="ann-txt"></div>
+
+<!-- ============================================================
+     TESTO "TROPPA AURA BRO" — Effetto speciale di Taff
+============================================================ -->
+<div id="aura-txt"></div>
+
+<!-- ============================================================
+     SCHERMO TITOLO
+============================================================ -->
+<div id="screen-title" class="screen">
+  <div class="logo">⚓ BATTAGLIA<br><b>NAVALE</b> SMASH ⚓</div>
+  <div class="logo-sub">21 Combattenti · Superpoteri · Weapons</div>
+  <div class="t-icons" id="t-icons"></div>
+  <button class="big-btn" onclick="showSelect()">▶ INIZIA LA BATTAGLIA</button>
+  <div class="small-tag">2 Giocatori · Stessa Tastiera</div>
+</div>
+
+<!-- ============================================================
+     SCHERMO SELEZIONE PERSONAGGIO
+============================================================ -->
+<div id="screen-select" class="screen hidden">
+  <div class="sel-title">SCEGLI IL COMBATTENTE</div>
+  <div class="sel-row">
+    <div class="sel-slot">
+      <div class="sel-lbl" style="color:#ff4466">Player 1 · WASD+Q</div>
+      <div class="sel-av p1" id="av1">?</div>
+      <div id="nm1" style="font-family:'Fredoka One',cursive;font-size:12px;color:rgba(255,255,255,.35)">Nessuno</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+      <div class="vs-big">VS</div>
+      <div class="sel-step" id="sel-step">▶ P1: scegli</div>
+    </div>
+    <div class="sel-slot">
+      <div class="sel-lbl" style="color:#44aaff">Player 2 · ←→↑+/</div>
+      <div class="sel-av p2" id="av2">?</div>
+      <div id="nm2" style="font-family:'Fredoka One',cursive;font-size:12px;color:rgba(255,255,255,.35)">Nessuno</div>
+    </div>
+  </div>
+  <div class="char-grid" id="char-grid"></div>
+  <button class="fight-btn" id="fight-btn" onclick="showPreFight()">⚔ COMBATTI!</button>
+</div>
+
+<!-- ============================================================
+     SCHERMO PRE-FIGHT
+============================================================ -->
+<div id="screen-prefight" class="screen hidden">
+  <div class="pf-hdr">⚔ SCONTRO ⚔</div>
+  <div class="pf-layout">
+
+    <!-- Lato P1 -->
+    <div class="pf-side" id="pf-s1">
+      <div class="pf-ch-hdr">
+        <span class="pf-em" id="pf-em1">?</span>
+        <div>
+          <div class="pf-nm" id="pf-nm1">P1</div>
+          <div class="pf-ds" id="pf-ds1"></div>
+        </div>
+      </div>
+      <div class="pf-pow" id="pf-pw1"></div>
+      <div class="pf-stats">
+        <div class="pf-stat"><span>Vel</span><div class="pf-bar"><div class="pf-bar-f" id="pf-spd1"></div></div></div>
+        <div class="pf-stat"><span>Salto</span><div class="pf-bar"><div class="pf-bar-f" id="pf-jmp1"></div></div></div>
+        <div class="pf-stat"><span>Forza</span><div class="pf-bar"><div class="pf-bar-f" id="pf-dmg1"></div></div></div>
+        <div class="pf-stat"><span>Peso</span><div class="pf-bar"><div class="pf-bar-f" id="pf-wt1"></div></div></div>
+      </div>
+      <hr class="pf-div">
+      <div class="pf-ctrl-t">🎮 PLAYER 1</div>
+      <div class="pf-cr"><span class="pk">A/D</span>Muovi</div>
+      <div class="pf-cr"><span class="pk">W</span>Salta (×2 = doppio salto)</div>
+      <div class="pf-cr"><span class="pk">S</span>Accovacciati</div>
+      <div class="pf-cr"><span class="pk">F</span>Attacca — 3 mosse combo</div>
+      <div class="pf-cr"><span class="pk">S+F</span>Scivolata</div>
+      <div class="pf-cr"><span class="pk">Q</span>⚡ SUPERPOTERE</div>
+      <div class="pf-cr"><span class="pk">E</span>Raccogli/Lancia arma</div>
+    </div>
+
+    <!-- Centro VS -->
+    <div class="pf-mid">
+      <div class="pf-vs">VS</div>
+      <button class="pf-go" id="pf-go" onclick="startCountdown()">FIGHT!</button>
+      <div id="pf-cd"></div>
+    </div>
+
+    <!-- Lato P2 -->
+    <div class="pf-side" id="pf-s2">
+      <div class="pf-ch-hdr">
+        <span class="pf-em" id="pf-em2">?</span>
+        <div>
+          <div class="pf-nm" id="pf-nm2">P2</div>
+          <div class="pf-ds" id="pf-ds2"></div>
+        </div>
+      </div>
+      <div class="pf-pow" id="pf-pw2"></div>
+      <div class="pf-stats">
+        <div class="pf-stat"><span>Vel</span><div class="pf-bar"><div class="pf-bar-f" id="pf-spd2"></div></div></div>
+        <div class="pf-stat"><span>Salto</span><div class="pf-bar"><div class="pf-bar-f" id="pf-jmp2"></div></div></div>
+        <div class="pf-stat"><span>Forza</span><div class="pf-bar"><div class="pf-bar-f" id="pf-dmg2"></div></div></div>
+        <div class="pf-stat"><span>Peso</span><div class="pf-bar"><div class="pf-bar-f" id="pf-wt2"></div></div></div>
+      </div>
+      <hr class="pf-div">
+      <div class="pf-ctrl-t">🎮 PLAYER 2</div>
+      <div class="pf-cr"><span class="pk">←/→</span>Muovi</div>
+      <div class="pf-cr"><span class="pk">↑</span>Salta (×2 = doppio salto)</div>
+      <div class="pf-cr"><span class="pk">↓</span>Accovacciati</div>
+      <div class="pf-cr"><span class="pk">L</span>Attacca — 3 mosse combo</div>
+      <div class="pf-cr"><span class="pk">↓+L</span>Scivolata</div>
+      <div class="pf-cr"><span class="pk">/</span>⚡ SUPERPOTERE</div>
+      <div class="pf-cr"><span class="pk">.</span>Raccogli/Lancia arma</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ============================================================
+     SCHERMO DI GIOCO
+============================================================ -->
+<div id="screen-game" class="screen hidden">
+  <div id="top-bar">
+    <span style="font-family:'Fredoka One',cursive;font-size:9px;letter-spacing:3px;color:rgba(255,255,255,.18)">BATTAGLIA NAVALE SMASH</span>
+    <div id="timer">3:00</div>
+    <button id="guide-btn" onclick="toggleGuide()">❓ GUIDA</button>
+  </div>
+
+  <!-- Arena con effetto prospettico 3D -->
+  <div id="arena-wrap">
+    <div id="arena-inner">
+      <canvas id="game-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- HUD inferiore stile Smash Bros -->
+  <div id="smash-hud">
+    <!-- Player 1 -->
+    <div class="sh-player">
+      <div class="sh-name" id="sh-nm1" style="color:#ff4466">P1</div>
+      <div class="sh-lives" id="sh-lv1"></div>
+      <div class="sh-pct" id="sh-pct1" style="color:#ff4466">0%</div>
+      <div class="sh-pwr">
+        <span class="sh-pwr-lbl" id="sh-pl1">⚡</span>
+        <div class="sh-pbar"><div class="sh-pbar-f" id="sh-pb1" style="width:0%"></div></div>
+      </div>
+      <div class="sh-wep" id="sh-w1">
+        <span id="sh-we1"></span>
+        <div class="wdur-t"><div class="wdur-f" id="sh-wd1" style="background:#ffd700;width:100%"></div></div>
+      </div>
+    </div>
+
+    <div id="sh-center">VS</div>
+
+    <!-- Player 2 -->
+    <div class="sh-player">
+      <div class="sh-name" id="sh-nm2" style="color:#44aaff">P2</div>
+      <div class="sh-lives" id="sh-lv2"></div>
+      <div class="sh-pct" id="sh-pct2" style="color:#44aaff">0%</div>
+      <div class="sh-pwr">
+        <span class="sh-pwr-lbl" id="sh-pl2">⚡</span>
+        <div class="sh-pbar"><div class="sh-pbar-f" id="sh-pb2" style="width:0%"></div></div>
+      </div>
+      <div class="sh-wep" id="sh-w2">
+        <span id="sh-we2"></span>
+        <div class="wdur-t"><div class="wdur-f" id="sh-wd2" style="background:#ffd700;width:100%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Barra controlli in basso -->
+  <div id="ctrl-bar">
+    <span>P1: <span class="ck">A</span><span class="ck">D</span>muovi <span class="ck">W</span>salta <span class="ck">S</span>crouch <span class="ck">F</span>attacca <span class="ck">Q</span>potere <span class="ck">E</span>arma</span>
+    <span>P2: <span class="ck">←</span><span class="ck">→</span>muovi <span class="ck">↑</span>salta <span class="ck">↓</span>crouch <span class="ck">L</span>attacca <span class="ck">/</span>potere <span class="ck">.</span>arma</span>
+  </div>
+</div>
+
+<!-- ============================================================
+     SCHERMO RISULTATO
+============================================================ -->
+<div id="screen-result" class="screen hidden">
+  <div class="res-crown">🏆 VINCITORE</div>
+  <div class="stars">
+    <span class="star">⭐</span>
+    <span class="star">⭐</span>
+    <span class="star">⭐</span>
+  </div>
+  <div class="res-em" id="res-em"></div>
+  <div class="res-name" id="res-name"></div>
+  <div class="res-sub" id="res-sub"></div>
+  <div class="res-btns">
+    <button class="res-btn" onclick="showSelect()">🔁 RIVINCITA</button>
+    <button class="res-btn" onclick="showTitle()">🏠 MENU</button>
+  </div>
+</div>
+
+<!-- ============================================================
+     GUIDA OVERLAY
+============================================================ -->
+<div id="guide-ov">
+  <div id="guide-box">
+    <h2>📖 GUIDA AL GIOCO</h2>
+    <div class="g-grid">
+      <div>
+        <div class="g-sec">
+          <h3>🎮 PLAYER 1</h3>
+          <div class="g-row"><span class="gk">A/D</span>Muovi sinistra/destra</div>
+          <div class="g-row"><span class="gk">W</span>Salta — W×2 doppio salto</div>
+          <div class="g-row"><span class="gk">S</span>Accovacciati (schiva bassi)</div>
+          <div class="g-row"><span class="gk">F</span>Attacca (3 livelli combo)</div>
+          <div class="g-row"><span class="gk">S+F</span>Scivolata bassa</div>
+          <div class="g-row"><span class="gk">Q</span>⚡ Superpotere</div>
+          <div class="g-row"><span class="gk">E</span>Raccogli/Lancia arma</div>
+        </div>
+        <div class="g-sec" style="margin-top:12px">
+          <h3>🎮 PLAYER 2</h3>
+          <div class="g-row"><span class="gk">←→</span>Muovi</div>
+          <div class="g-row"><span class="gk">↑</span>Salta — ↑×2 doppio</div>
+          <div class="g-row"><span class="gk">↓</span>Accovacciati</div>
+          <div class="g-row"><span class="gk">L</span>Attacca</div>
+          <div class="g-row"><span class="gk">/</span>⚡ Superpotere</div>
+          <div class="g-row"><span class="gk">.</span>Arma</div>
+        </div>
+      </div>
+      <div>
+        <div class="g-sec">
+          <h3>⚡ SUPERPOTERI</h3>
+          <div class="g-row">🔱<span><b>Brutus</b> — 8 proiettili esplosivi a cerchio</span></div>
+          <div class="g-row">🌀<span><b>Tornari</b> — Tornado letale che aspira</span></div>
+          <div class="g-row">🧻<span><b>Scottex</b> — Ripristina -45% danno</span></div>
+          <div class="g-row">🌋<span><b>Ercolano</b> — Scudo + pioggia di lava</span></div>
+          <div class="g-row">🐐<span><b>Pierigoat</b> — Raggio divino 3 colpi</span></div>
+          <div class="g-row">🐟<span><b>GoatNatan</b> — Tsunami devastante</span></div>
+          <div class="g-row">📡<span><b>Marcello</b> — Bombardamento laser</span></div>
+          <div class="g-row">🥷<span><b>Taji</b> — Teletrasporto + combo 4 hit</span></div>
+          <div class="g-row">🧔‍♂️<span><b>Gibo</b> — Nani inseguitori</span></div>
+          <div class="g-row">🎈<span><b>Bolly</b> — Rimbalzo + controlli invertiti</span></div>
+          <div class="g-row">🎩<span><b>Cappels</b> — Onde musicali</span></div>
+          <div class="g-row">🛞<span><b>Cerchioni</b> — Turbo derapata</span></div>
+          <div class="g-row">💀<span><b>Joey Schiatti</b> — Presa tombale</span></div>
+          <div class="g-row">🏆<span><b>Coppa</b> — Luce della vittoria</span></div>
+          <div class="g-row">💾<span><b>DB</b> — System error (controlli invertiti)</span></div>
+          <div class="g-row">🎀<span><b>Giuls</b> — Pasticcini esplosivi</span></div>
+          <div class="g-row">🧪<span><b>Nitrato</b> — Nube tossica (area danno)</span></div>
+          <div class="g-row">🌀<span><b>Ogbi</b> — Vortice gravitazionale</span></div>
+          <div class="g-row">🐧<span><b>Pingus</b> — Scivolata glaciale</span></div>
+          <div class="g-row">🍬<span><b>Taff</b> — Troppa Aura Bro (azzera danno)</span></div>
+          <div class="g-row">🌶️<span><b>Chivez</b> — Furia piccante</span></div>
+        </div>
+        <div class="g-sec" style="margin-top:12px">
+          <h3>🎯 MECCANICHE</h3>
+          <div class="g-row">Il % sale con i danni ricevuti</div>
+          <div class="g-row">Più % = voli più lontano quando colpito</div>
+          <div class="g-row">A 200%: ESPLOSIONE automatica!</div>
+          <div class="g-row">Cadere fuori = perde una vita</div>
+          <div class="g-row">3 vite per giocatore</div>
+          <div class="g-row">Combo 3x = colpo speciale potenziato</div>
+        </div>
+      </div>
+    </div>
+    <button class="close-btn" onclick="toggleGuide()">✓ CHIUDI</button>
+  </div>
+</div>
+
+<!-- ============================================================
+     SCRIPT — Ordine di caricamento: config → powers → engine
+     Il defer garantisce che il DOM sia pronto prima dell'esecuzione.
+============================================================ -->
+<script src="config.js"></script>
+<script src="powers.js"></script>
+<script src="engine.js"></script>
+<script>
+  // Avvio dell'applicazione dopo il caricamento di tutti i moduli
+  showTitle();
+</script>
+
+</body>
+</html>
