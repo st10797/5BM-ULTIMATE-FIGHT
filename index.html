@@ -53,8 +53,50 @@
   <div class="logo">⚓ BATTAGLIA<br><b>NAVALE</b> SMASH ⚓</div>
   <div class="logo-sub">21 Combattenti · Superpoteri · Weapons</div>
   <div class="t-icons" id="t-icons"></div>
-  <button class="big-btn" onclick="showSelect()">▶ INIZIA LA BATTAGLIA</button>
-  <div class="small-tag">2 Giocatori · Stessa Tastiera</div>
+  <div class="title-btns">
+    <button class="big-btn" onclick="showSelect()">▶ GIOCA IN LOCALE</button>
+    <button class="big-btn mp-btn" onclick="showMultiplayer()">🌐 MULTIPLAYER ONLINE</button>
+  </div>
+  <div class="small-tag">2 Giocatori · Locale o Online</div>
+</div>
+
+<!-- ============================================================
+     SCHERMO MULTIPLAYER
+============================================================ -->
+<div id="screen-multiplayer" class="screen hidden">
+  <div class="logo" style="font-size:clamp(28px,5vw,56px)">🌐 MULTIPLAYER</div>
+  <div class="mp-container">
+
+    <!-- Crea stanza -->
+    <div class="mp-card" id="mp-create-card">
+      <div class="mp-card-title">🏠 CREA STANZA</div>
+      <div class="mp-card-desc">Crea una nuova stanza e condividi il codice con un amico</div>
+      <button class="mp-action-btn" onclick="mpCreateRoom()">CREA STANZA</button>
+    </div>
+
+    <!-- Unisciti a stanza -->
+    <div class="mp-card" id="mp-join-card">
+      <div class="mp-card-title">🚪 UNISCITI</div>
+      <div class="mp-card-desc">Inserisci il codice stanza del tuo amico</div>
+      <input type="text" id="mp-room-input" class="mp-input" placeholder="Codice stanza (es. AB12)" maxlength="4" oninput="this.value=this.value.toUpperCase()">
+      <button class="mp-action-btn" onclick="mpJoinRoom()">ENTRA</button>
+    </div>
+
+  </div>
+
+  <!-- Stato connessione -->
+  <div id="mp-status" class="mp-status"></div>
+
+  <!-- Stanza attiva -->
+  <div id="mp-room-info" class="mp-room-info hidden">
+    <div class="mp-room-code-lbl">CODICE STANZA</div>
+    <div class="mp-room-code" id="mp-room-code-display">----</div>
+    <div class="mp-room-players" id="mp-room-players">In attesa del secondo giocatore...</div>
+    <div class="mp-room-ping" id="mp-room-ping"></div>
+    <button class="mp-action-btn" id="mp-start-btn" style="display:none" onclick="mpStartGame()">⚔ INIZIA PARTITA!</button>
+  </div>
+
+  <button class="res-btn" style="margin-top:18px" onclick="showTitle()">← INDIETRO</button>
 </div>
 
 <!-- ============================================================
@@ -64,7 +106,7 @@
   <div class="sel-title">SCEGLI IL COMBATTENTE</div>
   <div class="sel-row">
     <div class="sel-slot">
-      <div class="sel-lbl" style="color:#ff4466">Player 1 · WASD+Q</div>
+      <div class="sel-lbl" style="color:#ff4466" id="sel-lbl1">Player 1 · WASD+Q</div>
       <div class="sel-av p1" id="av1">?</div>
       <div id="nm1" style="font-family:'Fredoka One',cursive;font-size:12px;color:rgba(255,255,255,.35)">Nessuno</div>
     </div>
@@ -73,7 +115,7 @@
       <div class="sel-step" id="sel-step">▶ P1: scegli</div>
     </div>
     <div class="sel-slot">
-      <div class="sel-lbl" style="color:#44aaff">Player 2 · ←→↑+/</div>
+      <div class="sel-lbl" style="color:#44aaff" id="sel-lbl2">Player 2 · ←→↑+/</div>
       <div class="sel-av p2" id="av2">?</div>
       <div id="nm2" style="font-family:'Fredoka One',cursive;font-size:12px;color:rgba(255,255,255,.35)">Nessuno</div>
     </div>
@@ -271,7 +313,7 @@
           <div class="g-row">📡<span><b>Marcello</b> — Bombardamento laser</span></div>
           <div class="g-row">🥷<span><b>Taji</b> — Teletrasporto + combo 4 hit</span></div>
           <div class="g-row">🧔‍♂️<span><b>Gibo</b> — Nani inseguitori</span></div>
-          <div class="g-row">🎈<span><b>Bolly</b> — Rimbalzo + controlli invertiti</span></div>
+          <div class="g-row">🎈<span><b>Bolly</b> — GIGANTISMO (dimensioni enormi!)</span></div>
           <div class="g-row">🎩<span><b>Cappels</b> — Onde musicali</span></div>
           <div class="g-row">🛞<span><b>Cerchioni</b> — Turbo derapata</span></div>
           <div class="g-row">💀<span><b>Joey Schiatti</b> — Presa tombale</span></div>
@@ -300,9 +342,10 @@
 </div>
 
 <!-- ============================================================
-     SCRIPT — Ordine di caricamento: config → powers → engine → multiplayer
-     Il defer garantisce che il DOM sia pronto prima dell'esecuzione.
+     SCRIPT — Ordine di caricamento
 ============================================================ -->
+<!-- Configurazione variabili d'ambiente (BACKEND_URL) -->
+<script src="env-config.js"></script>
 <!-- Socket.io per il multiplayer -->
 <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 <!-- Moduli del gioco -->

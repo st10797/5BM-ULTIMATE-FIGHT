@@ -12,15 +12,23 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
+// CORS: usa FRONTEND_URL da variabile d'ambiente Render, oppure permetti tutto in development
+const allowedOrigins = process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5173']
+  : '*';
+
 const io = socketIo(server, {
   cors: {
-    origin: '*',
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
   },
 });
 
-// Middleware
-app.use(cors());
+// Middleware — CORS configurato con variabile d'ambiente FRONTEND_URL
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ['GET', 'POST'],
+}));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../battaglia_navale_smash')));
 

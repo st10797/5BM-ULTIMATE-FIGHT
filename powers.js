@@ -285,30 +285,54 @@ function usePower(pi) {
        Stato alterato: p.controlsInverted con timer setTimeout.
     ────────────────────────────────────────────────────── */
     case 'gigantismo': {
-      showPowAnnounce('🎈 GIGANTISMO!!!', ch.col);
-      flashScreen(ch.col, 0.6);
-      addPfx({ type: 'shockwave', x: pp.x + pp.w / 2, y: pp.y + pp.h / 2, r: 0, maxR: 220, life: 0.5, col: ch.col });
-      
-      // Applica gigantismo: scala 3x, velocita 0.5x, danno 3x
-      pp.gigantScale = 3.0;
-      pp.speedMultiplier = 0.5;
-      pp.damageMultiplier = 3.0;
-      pp.invincT = 0.4;
-      
-      // Particelle di trasformazione
-      for (let i = 0; i < MAX_PARTICLES_PER_EXPLOSION; i++) {
-        ptcls.push({ x: pp.x + pp.w / 2 + (Math.random() - 0.5) * 40, y: pp.y + pp.h / 2, vx: (Math.random() - 0.5) * 12, vy: -2 - Math.random() * 10, life: 1.0, ml: 1.0, col: ch.col, sz: 5 + Math.random() * 8 });
+      showPowAnnounce('🎈 BOLLY GIGANTE!!!', ch.col);
+      flashScreen(ch.col, 0.85);
+      shake = 2.5;
+
+      // Onde d'urto multiple alla trasformazione
+      for (let r = 0; r < 5; r++) {
+        setTimeout(() => {
+          addPfx({ type: 'shockwave', x: pp.x + pp.w / 2, y: pp.y + pp.h / 2, r: 0, maxR: 280 + r * 60, life: 0.7, col: ch.col });
+        }, r * 80);
       }
-      
-      // Ripristina dopo 5 secondi
+
+      // Applica gigantismo ENORME: scala 5.5x visiva, hitbox 2.5x, danno 4x
+      pp.gigantScale       = 5.5;   // Scala visiva enormemente amplificata
+      pp.w                 = 44 * 2.5;  // Hitbox fisica allargata
+      pp.h                 = 58 * 2.5;  // Hitbox fisica alta
+      pp.speedMultiplier   = 0.45;  // Più lento (è enorme)
+      pp.damageMultiplier  = 4.0;   // Danno quadruplicato
+      pp.invincT           = 0.6;   // Breve invincibilità alla trasformazione
+
+      // Esplosione di particelle massiccia
+      for (let i = 0; i < 40; i++) {
+        const ang = i / 40 * Math.PI * 2;
+        const spd = 8 + Math.random() * 18;
+        ptcls.push({
+          x: pp.x + pp.w / 2 + (Math.random() - 0.5) * 60,
+          y: pp.y + pp.h / 2,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd - 4,
+          life: 1.4, ml: 1.4, col: ch.col, sz: 8 + Math.random() * 14
+        });
+      }
+
+      // Testo flottante
+      flt('🎈 GIGANTE!!!', pp.x, pp.y - 40, ch.col);
+
+      // Ripristina dopo 7 secondi
+      const piCapture = pi;
       setTimeout(() => {
-        if (p[pi]) {
-          p[pi].gigantScale = 1.0;
-          p[pi].speedMultiplier = 1.0;
-          p[pi].damageMultiplier = 1.0;
-          flt('OK Gigantismo terminato', p[pi].x, p[pi].y, '#88ff88');
+        if (p[piCapture]) {
+          p[piCapture].gigantScale     = 1.0;
+          p[piCapture].w               = 44;
+          p[piCapture].h               = 58;
+          p[piCapture].speedMultiplier = 1.0;
+          p[piCapture].damageMultiplier= 1.0;
+          flashScreen(p[piCapture].ch.col, 0.4);
+          flt('Gigantismo terminato', p[piCapture].x, p[piCapture].y, '#88ff88');
         }
-      }, 5000);
+      }, 7000);
       break;
     }
 

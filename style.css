@@ -1230,3 +1230,186 @@ hr.pf-div {
   z-index: 599;
   animation: goldenFlash 0.5s ease-out forwards;
 }
+
+/* ============================================================
+   SCHERMO TITOLO — Pulsanti multipli
+============================================================ */
+.title-btns {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 28px;
+  z-index: 1;
+}
+
+.mp-btn {
+  background: linear-gradient(135deg, #1a6eff, #0040cc) !important;
+  box-shadow: 0 8px 28px rgba(30, 100, 255, 0.5) !important;
+}
+
+.mp-btn:hover {
+  box-shadow: 0 14px 40px rgba(30, 100, 255, 0.7) !important;
+}
+
+/* ============================================================
+   SCHERMO MULTIPLAYER
+============================================================ */
+#screen-multiplayer {
+  background: radial-gradient(ellipse at 50% 30%, #0d1a50, #060a20 70%);
+  padding: 20px;
+  overflow-y: auto;
+  gap: 16px;
+}
+
+.mp-container {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 100%;
+  max-width: 700px;
+}
+
+.mp-card {
+  flex: 1;
+  min-width: 240px;
+  max-width: 300px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 2px solid rgba(100, 160, 255, 0.25);
+  border-radius: 18px;
+  padding: 22px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  transition: 0.2s;
+}
+
+.mp-card:hover {
+  border-color: rgba(100, 160, 255, 0.55);
+  box-shadow: 0 0 24px rgba(80, 140, 255, 0.18);
+}
+
+.mp-card-title {
+  font-family: 'Boogaloo', cursive;
+  font-size: 22px;
+  color: #ffd700;
+  text-shadow: 2px 2px 0 #885500;
+}
+
+.mp-card-desc {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.5;
+  letter-spacing: 0.3px;
+}
+
+.mp-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(100, 160, 255, 0.35);
+  border-radius: 10px;
+  color: #fff;
+  font-family: 'Boogaloo', cursive;
+  font-size: 22px;
+  text-align: center;
+  letter-spacing: 6px;
+  text-transform: uppercase;
+  outline: none;
+  transition: 0.2s;
+}
+
+.mp-input:focus {
+  border-color: rgba(100, 160, 255, 0.8);
+  box-shadow: 0 0 14px rgba(80, 140, 255, 0.3);
+}
+
+.mp-input::placeholder {
+  color: rgba(255, 255, 255, 0.2);
+  letter-spacing: 2px;
+  font-size: 14px;
+}
+
+.mp-action-btn {
+  padding: 10px 28px;
+  background: linear-gradient(135deg, #1a6eff, #0040cc);
+  border: none;
+  color: #fff;
+  font-family: 'Boogaloo', cursive;
+  font-size: 18px;
+  letter-spacing: 3px;
+  cursor: pointer;
+  border-radius: 50px;
+  box-shadow: 0 6px 22px rgba(30, 100, 255, 0.4);
+  transition: 0.2s;
+  width: 100%;
+}
+
+.mp-action-btn:hover {
+  transform: scale(1.04) translateY(-2px);
+  box-shadow: 0 10px 32px rgba(30, 100, 255, 0.65);
+}
+
+.mp-status {
+  font-family: 'Fredoka One', cursive;
+  font-size: 13px;
+  letter-spacing: 1px;
+  padding: 8px 18px;
+  border-radius: 20px;
+  min-height: 20px;
+  text-align: center;
+  transition: 0.2s;
+}
+
+.mp-status-info    { color: rgba(255,255,255,.65); background: rgba(255,255,255,.05); }
+.mp-status-success { color: #44ff88; background: rgba(0,200,80,.1); border: 1px solid rgba(0,200,80,.25); }
+.mp-status-error   { color: #ff4466; background: rgba(255,0,50,.1); border: 1px solid rgba(255,0,50,.25); }
+.mp-status-warn    { color: #ffd700; background: rgba(255,200,0,.1); border: 1px solid rgba(255,200,0,.25); }
+
+.mp-room-info {
+  background: rgba(255,255,255,.04);
+  border: 2px solid rgba(100,200,100,.3);
+  border-radius: 18px;
+  padding: 20px 28px;
+  text-align: center;
+  max-width: 400px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.mp-room-info.hidden { display: none !important; }
+
+.mp-room-code-lbl {
+  font-family: 'Fredoka One', cursive;
+  font-size: 10px;
+  letter-spacing: 4px;
+  color: rgba(255,255,255,.35);
+  text-transform: uppercase;
+}
+
+.mp-room-code {
+  font-family: 'Boogaloo', cursive;
+  font-size: 52px;
+  color: #ffd700;
+  text-shadow: 4px 4px 0 #885500, 0 0 40px rgba(255,200,0,.5);
+  letter-spacing: 10px;
+}
+
+.mp-room-players {
+  font-family: 'Fredoka One', cursive;
+  font-size: 13px;
+  color: rgba(255,255,255,.65);
+  letter-spacing: 1px;
+}
+
+.mp-room-ping {
+  font-size: 10px;
+  color: rgba(255,255,255,.3);
+  letter-spacing: 1px;
+}
