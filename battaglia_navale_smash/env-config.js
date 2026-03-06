@@ -16,11 +16,23 @@
  *   che viene iniettato da questo file o da Vercel tramite env vars.
  */
 
-// URL del backend: usa variabile d'ambiente Vercel se disponibile,
-// altrimenti fallback all'URL di produzione Render
-window.BACKEND_URL = (
-  (typeof process !== 'undefined' && process.env && process.env.VITE_BACKEND_URL) ||
-  'https://fivebm-ultimate-fight.onrender.com'
-);
+// BUGFIX v1.1: rilevamento automatico ambiente locale
+// Se il gioco viene aperto da localhost, usa il server locale
+(function () {
+  const envUrl = (typeof process !== 'undefined' && process.env && process.env.VITE_BACKEND_URL)
+    ? process.env.VITE_BACKEND_URL
+    : null;
 
-console.log('[CONFIG] Backend URL:', window.BACKEND_URL);
+  const isLocalhost = (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname === ''
+  );
+
+  const productionUrl = 'https://fivebm-ultimate-fight.onrender.com';
+
+  window.BACKEND_URL = envUrl || (isLocalhost ? 'http://localhost:3000' : productionUrl);
+
+  console.log('[CONFIG] Ambiente:', isLocalhost ? 'locale' : 'produzione');
+  console.log('[CONFIG] Backend URL:', window.BACKEND_URL);
+})();

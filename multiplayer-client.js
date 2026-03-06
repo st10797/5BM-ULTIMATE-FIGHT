@@ -41,7 +41,7 @@ let pingIv = null;
 
 /* ============================================================
    INIZIALIZZAZIONE SOCKET.IO
-============================================================ -->
+============================================================ */
 
 /**
  * Inizializza la connessione Socket.io con il server Render.
@@ -58,10 +58,12 @@ function initSocket() {
 
   socket = io(serverUrl, {
     reconnection: true,
-    reconnectionDelay: 1500,
-    reconnectionDelayMax: 6000,
-    reconnectionAttempts: 5,
-    timeout: 10000,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: 8,
+    timeout: 15000,
+    // Prova prima WebSocket, poi polling come fallback
+    transports: ['websocket', 'polling'],
   });
 
   socket.on('connect',          onSocketConnect);
@@ -227,8 +229,18 @@ function onSocketDisconnect(reason) {
 }
 
 function onSocketError(err) {
-  mpSetStatus('❌ Errore connessione: ' + (err.message || err), 'error');
-  console.error('[MP] Errore:', err);
+  const msg = err.message || String(err);
+  // Messaggio più chiaro per errori comuni
+  let displayMsg = '❌ Errore connessione: ' + msg;
+  if (msg.includes('timeout') || msg.includes('TIMEOUT')) {
+    displayMsg = '❌ Timeout: il server non risponde. Riprova tra qualche secondo.';
+  } else if (msg.includes('refused') || msg.includes('ECONNREFUSED')) {
+    displayMsg = '❌ Server non raggiungibile. Verifica la connessione internet.';
+  } else if (msg.includes('cors') || msg.includes('CORS')) {
+    displayMsg = '❌ Errore CORS: configurazione server non corretta.';
+  }
+  mpSetStatus(displayMsg, 'error');
+  console.error('[MP] Errore connessione:', err);
 }
 
 function onServerError(data) {

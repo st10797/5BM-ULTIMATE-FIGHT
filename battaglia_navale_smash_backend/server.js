@@ -2,6 +2,14 @@
  * server.js — Battaglia Navale Smash Backend
  * Server Node.js con Express e Socket.io per il multiplayer
  * Gestisce stanze, sincronizzazione giocatori e abilità
+ *
+ * BUGFIX v1.1:
+ * - CORS: aggiunto supporto per origini multiple e wildcard sicuro
+ * - Socket.io: aggiunto allowEIO3 per compatibilità con client più vecchi
+ * - Socket.io: aggiunto transports con polling come fallback
+ * - Aggiunto endpoint /api/ping per test di connessione rapido
+ * - Migliorata la gestione degli errori di connessione
+ * - Aggiunto cleanup automatico delle stanze inattive (>30 minuti)
  */
 
 const express = require('express');
@@ -12,23 +20,63 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-// CORS: usa FRONTEND_URL da variabile d'ambiente Render, oppure permetti tutto in development
-const allowedOrigins = process.env.FRONTEND_URL
-  ? [process.env.FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5173']
-  : '*';
+
+/* ============================================================
+   CONFIGURAZIONE CORS
+   Permette connessioni da qualsiasi origine in development,
+   oppure solo dall'URL del frontend in production.
+============================================================ */
+
+// Funzione di validazione origine CORS
+function corsOriginValidator(origin, callback) {
+  // Permetti richieste senza origine (es. Postman, curl, file://)
+  if (!origin) return callback(null, true);
+
+  // In development o senza FRONTEND_URL configurato: permetti tutto
+  if (!process.env.FRONTEND_URL || process.env.NODE_ENV !== 'production') {
+    return callback(null, true);
+  }
+
+  // In production: permetti solo l'URL del frontend e localhost
+  const allowed = [
+    process.env.FRONTEND_URL,
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+  ];
+
+  if (allowed.includes(origin)) {
+    callback(null, true);
+  } else {
+    console.warn(`[CORS] Origine bloccata: ${origin}`);
+    callback(new Error('CORS: origine non consentita'));
+  }
+}
+
+const corsOptions = {
+  origin: corsOriginValidator,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  credentials: true,
+};
 
 const io = socketIo(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: corsOriginValidator,
     methods: ['GET', 'POST'],
+    credentials: true,
   },
+  // Supporto per polling come fallback (utile quando WebSocket è bloccato)
+  transports: ['websocket', 'polling'],
+  // Compatibilità con versioni precedenti di Socket.io client
+  allowEIO3: true,
+  // Timeout ping/pong per rilevare connessioni cadute
+  pingTimeout: 20000,
+  pingInterval: 10000,
 });
 
-// Middleware — CORS configurato con variabile d'ambiente FRONTEND_URL
-app.use(cors({
-  origin: allowedOrigins,
-  methods: ['GET', 'POST'],
-}));
+// Middleware — CORS, JSON e file statici
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../battaglia_navale_smash')));
 
@@ -43,6 +91,7 @@ app.use(express.static(path.join(__dirname, '../battaglia_navale_smash')));
  *   players: { socketId: { id, name, character, x, y, damage, ... } },
  *   state: 'waiting' | 'playing' | 'finished',
  *   createdAt: timestamp,
+ *   lastActivity: timestamp,
  *   gameState: { timer, p1Stocks, p2Stocks, ... }
  * }
  */
@@ -85,6 +134,7 @@ function createRoom(roomCode) {
     players: {},
     state: 'waiting',
     createdAt: Date.now(),
+    lastActivity: Date.now(),
     gameState: {
       timer: 180,
       started: false,
@@ -92,6 +142,15 @@ function createRoom(roomCode) {
   };
   rooms[roomCode] = room;
   return room;
+}
+
+/**
+ * Aggiorna il timestamp di ultima attività di una stanza
+ * @param {string} roomCode
+ */
+function touchRoom(roomCode) {
+  const room = getRoom(roomCode);
+  if (room) room.lastActivity = Date.now();
 }
 
 /**
@@ -103,10 +162,10 @@ function createRoom(roomCode) {
 function addPlayerToRoom(roomCode, socketId, playerData) {
   const room = getRoom(roomCode);
   if (!room) return false;
-  
+
   const playerCount = Object.keys(room.players).length;
   if (playerCount >= 2) return false; // Max 2 giocatori
-  
+
   room.players[socketId] = {
     id: socketId,
     index: playerCount,
@@ -117,8 +176,9 @@ function addPlayerToRoom(roomCode, socketId, playerData) {
     stocks: 3,
     isDead: false,
   };
-  
+
   socketToRoom[socketId] = roomCode;
+  touchRoom(roomCode);
   return true;
 }
 
@@ -130,22 +190,43 @@ function addPlayerToRoom(roomCode, socketId, playerData) {
 function removePlayerFromRoom(roomCode, socketId) {
   const room = getRoom(roomCode);
   if (!room) return;
-  
+
   delete room.players[socketId];
   delete socketToRoom[socketId];
-  
+
   // Elimina la stanza se vuota
   if (Object.keys(room.players).length === 0) {
     delete rooms[roomCode];
   }
 }
 
+/**
+ * Cleanup automatico delle stanze inattive da più di 30 minuti
+ */
+function cleanupInactiveRooms() {
+  const now = Date.now();
+  const TIMEOUT = 30 * 60 * 1000; // 30 minuti
+  let cleaned = 0;
+  for (const code in rooms) {
+    if (now - rooms[code].lastActivity > TIMEOUT) {
+      delete rooms[code];
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`[CLEANUP] Rimosse ${cleaned} stanze inattive`);
+  }
+}
+
+// Esegui cleanup ogni 10 minuti
+setInterval(cleanupInactiveRooms, 10 * 60 * 1000);
+
 /* ============================================================
    SOCKET.IO EVENTS
 ============================================================ */
 
 io.on('connection', (socket) => {
-  console.log(`[CONNECT] Socket ${socket.id} connesso`);
+  console.log(`[CONNECT] Socket ${socket.id} connesso da ${socket.handshake.address}`);
 
   /**
    * Evento: joinRoom
@@ -153,10 +234,16 @@ io.on('connection', (socket) => {
    * Payload: { roomCode, playerName, character }
    */
   socket.on('joinRoom', (data, callback) => {
-    const { roomCode, playerName, character } = data;
-    
+    // Validazione callback
+    if (typeof callback !== 'function') {
+      console.warn(`[JOIN] Callback mancante da ${socket.id}`);
+      return;
+    }
+
+    const { roomCode, playerName, character } = data || {};
+
     if (!roomCode || !playerName || !character) {
-      callback({ success: false, message: 'Dati mancanti' });
+      callback({ success: false, message: 'Dati mancanti (roomCode, playerName, character)' });
       return;
     }
 
@@ -167,7 +254,13 @@ io.on('connection', (socket) => {
 
     const playerCount = Object.keys(room.players).length;
     if (playerCount >= 2) {
-      callback({ success: false, message: 'Stanza piena' });
+      callback({ success: false, message: 'Stanza piena (massimo 2 giocatori)' });
+      return;
+    }
+
+    // Controlla se il socket è già in questa stanza
+    if (socketToRoom[socket.id] === roomCode) {
+      callback({ success: false, message: 'Sei già in questa stanza' });
       return;
     }
 
@@ -178,7 +271,7 @@ io.on('connection', (socket) => {
     });
 
     if (!success) {
-      callback({ success: false, message: 'Errore aggiunta giocatore' });
+      callback({ success: false, message: 'Errore durante l\'aggiunta del giocatore' });
       return;
     }
 
@@ -201,13 +294,14 @@ io.on('connection', (socket) => {
       players: Object.values(room.players),
     });
 
-    console.log(`[JOIN] ${playerName} (${character}) in stanza ${roomCode}`);
+    console.log(`[JOIN] ${playerName} (${character}) in stanza ${roomCode} [slot ${room.players[socket.id].index}]`);
 
     // Se la stanza è piena, notifica per iniziare
     if (Object.keys(room.players).length === 2) {
       io.to(roomCode).emit('roomReady', {
         players: Object.values(room.players),
       });
+      console.log(`[READY] Stanza ${roomCode} pronta — 2 giocatori connessi`);
     }
   });
 
@@ -225,6 +319,7 @@ io.on('connection', (socket) => {
 
     // Aggiorna i dati del giocatore
     Object.assign(room.players[socket.id], data);
+    touchRoom(roomCode);
 
     // Invia a tutti gli altri giocatori nella stanza
     socket.to(roomCode).emit('playerMoved', {
@@ -247,6 +342,7 @@ io.on('connection', (socket) => {
     if (!room || !room.players[socket.id]) return;
 
     const playerIndex = room.players[socket.id].index;
+    touchRoom(roomCode);
 
     // Broadcast a tutti i giocatori nella stanza
     io.to(roomCode).emit('abilityUsed', {
@@ -272,6 +368,7 @@ io.on('connection', (socket) => {
 
     // Aggiorna lo stato del giocatore
     Object.assign(room.players[socket.id], data);
+    touchRoom(roomCode);
 
     // Broadcast a tutti
     io.to(roomCode).emit('gameStateChanged', {
@@ -293,13 +390,14 @@ io.on('connection', (socket) => {
     if (!room) return;
 
     if (Object.keys(room.players).length < 2) {
-      socket.emit('error', { message: 'Attendere il secondo giocatore' });
+      socket.emit('error', { message: 'Attendere il secondo giocatore prima di iniziare' });
       return;
     }
 
     room.state = 'playing';
     room.gameState.started = true;
     room.gameState.timer = 180;
+    touchRoom(roomCode);
 
     io.to(roomCode).emit('gameStarted', {
       players: Object.values(room.players),
@@ -322,6 +420,7 @@ io.on('connection', (socket) => {
     if (!room) return;
 
     room.state = 'finished';
+    touchRoom(roomCode);
 
     io.to(roomCode).emit('gameEnded', {
       winnerId: data.winnerId,
@@ -336,24 +435,24 @@ io.on('connection', (socket) => {
    * Evento: disconnect
    * Client si disconnette
    */
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
     const roomCode = socketToRoom[socket.id];
     if (roomCode) {
       const room = getRoom(roomCode);
       if (room) {
-        const playerName = room.players[socket.id]?.name || 'Unknown';
+        const playerName = room.players[socket.id]?.name || 'Sconosciuto';
         removePlayerFromRoom(roomCode, socket.id);
-        
+
         // Notifica gli altri giocatori
         io.to(roomCode).emit('playerLeft', {
           playerId: socket.id,
           playerName,
         });
 
-        console.log(`[DISCONNECT] ${playerName} da stanza ${roomCode}`);
+        console.log(`[DISCONNECT] ${playerName} ha lasciato la stanza ${roomCode} (motivo: ${reason})`);
       }
     }
-    console.log(`[DISCONNECT] Socket ${socket.id} disconnesso`);
+    console.log(`[DISCONNECT] Socket ${socket.id} disconnesso (motivo: ${reason})`);
   });
 
   /**
@@ -361,7 +460,9 @@ io.on('connection', (socket) => {
    * Health check per verificare la connessione
    */
   socket.on('ping', (callback) => {
-    callback({ pong: true, timestamp: Date.now() });
+    if (typeof callback === 'function') {
+      callback({ pong: true, timestamp: Date.now() });
+    }
   });
 });
 
@@ -383,6 +484,7 @@ app.get('/api/rooms', (req, res) => {
     })),
     state: room.state,
     createdAt: new Date(room.createdAt).toISOString(),
+    lastActivity: new Date(room.lastActivity).toISOString(),
   }));
   res.json(roomsList);
 });
@@ -397,7 +499,17 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     activeRooms: Object.keys(rooms).length,
     connectedClients: io.engine.clientsCount,
+    uptime: Math.floor(process.uptime()) + 's',
+    environment: process.env.NODE_ENV || 'development',
   });
+});
+
+/**
+ * GET /api/ping
+ * Ping rapido per verificare la raggiungibilità del server
+ */
+app.get('/api/ping', (req, res) => {
+  res.json({ pong: true, timestamp: Date.now() });
 });
 
 /**
@@ -413,19 +525,20 @@ app.get('/', (req, res) => {
 ============================================================ */
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n╔════════════════════════════════════════╗`);
   console.log(`║  BATTAGLIA NAVALE SMASH - Backend     ║`);
   console.log(`║  Server in ascolto su porta ${PORT}       ║`);
-  console.log(`║  Ambiente: ${process.env.NODE_ENV || 'development'}              ║`);
+  console.log(`║  Ambiente: ${(process.env.NODE_ENV || 'development').padEnd(14)}          ║`);
   console.log(`╚════════════════════════════════════════╝\n`);
 });
 
-// Gestione errori
+// Gestione errori non catturati
 process.on('uncaughtException', (err) => {
-  console.error('[ERROR] Errore non gestito:', err);
+  console.error('[ERROR] Errore non gestito:', err.message);
+  console.error(err.stack);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[ERROR] Promise rejection:', reason);
+  console.error('[ERROR] Promise rejection non gestita:', reason);
 });

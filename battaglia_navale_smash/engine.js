@@ -350,7 +350,8 @@ function startGame() {
   resizeCanvases();
 
   p[0] = mkPlayer(sel1, 0.28, '#ff4466', { L: 'a', R: 'd', U: 'w', D: 's', atk: 'f', pwr: 'q', pick: 'e' });
-  p[1] = mkPlayer(sel2, 0.72, '#44aaff', { L: 'arrowleft', R: 'arrowright', U: 'arrowup', D: 'arrowdown', atk: '.', pwr: ',', pick: '/' });
+  // BUGFIX: tasti P2 allineati con il keydown handler (atk='l', pwr='/', pick='.')  
+  p[1] = mkPlayer(sel2, 0.72, '#44aaff', { L: 'arrowleft', R: 'arrowright', U: 'arrowup', D: 'arrowdown', atk: 'l', pwr: '/', pick: '.' });
 
   // Aggiorna HUD con nomi e colori
   document.getElementById('sh-nm1').textContent = CHARS[sel1].nome;
@@ -1489,6 +1490,8 @@ function lerpColor(hex, amt) {
  */
 function drawPlayer(pi) {
   const pp = p[pi]; if (pp.isDead) return;
+  // Riferimento al personaggio del giocatore (BUGFIX: ch era undefined causando crash del rendering)
+  const ch = pp.ch;
   // Lampeggio di invincibilità dopo il respawn
   if (pp.invincT > 0 && Math.floor(pp.invincT * 9) % 2 === 0) return;
 
@@ -2122,8 +2125,8 @@ function isKey(k) { return keys[k.toLowerCase()] === true; }
 
 document.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
-  // Previeni lo scroll della pagina per i tasti di navigazione
-  if (['arrowleft', 'arrowup', 'arrowright', 'arrowdown', ' '].includes(k) || k === '/' || k === '.') e.preventDefault();
+  // Previeni comportamenti default per i tasti di gioco (scroll, navigazione, ecc.)
+  if (['arrowleft', 'arrowup', 'arrowright', 'arrowdown', ' '].includes(k) || k === '/' || k === '.' || k === 'l') e.preventDefault();
   if (!keys[k]) justDown[k] = true;
   keys[k] = true;
   if (!started || paused) return;
