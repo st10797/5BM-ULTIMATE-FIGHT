@@ -60,10 +60,19 @@ function initSocket() {
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
-    reconnectionAttempts: 8,
-    timeout: 15000,
+    reconnectionAttempts: 15,  // Aumentato da 8 a 15 per più tentativi
+    timeout: 20000,             // Aumentato da 15000 a 20000 ms
     // Prova prima WebSocket, poi polling come fallback
     transports: ['websocket', 'polling'],
+    // Configurazioni aggiuntive per stabilità
+    autoConnect: true,
+    upgrade: true,
+    rememberUpgrade: true,
+    // Heartbeat per mantenere la connessione attiva
+    pingInterval: 5000,
+    pingTimeout: 10000,
+    // Compatibilità con versioni precedenti
+    allowEIO3: true,
   });
 
   socket.on('connect',          onSocketConnect);
@@ -78,6 +87,8 @@ function initSocket() {
   socket.on('gameEnded',        onGameEnded);
   socket.on('playerLeft',       onPlayerLeft);
   socket.on('error',            onServerError);
+  socket.on('reconnect_attempt', onReconnectAttempt);
+  socket.on('reconnect',        onReconnect);
 
   return true;
 }
@@ -245,6 +256,16 @@ function onSocketError(err) {
 
 function onServerError(data) {
   mpSetStatus('❌ ' + (data.message || 'Errore server'), 'error');
+}
+
+function onReconnectAttempt() {
+  console.log('[MP] Tentativo di riconnessione...');
+  mpSetStatus('🔄 Tentativo di riconnessione...', 'info');
+}
+
+function onReconnect() {
+  console.log('[MP] Riconnesso al server');
+  mpSetStatus('✅ Riconnesso al server', 'success');
 }
 
 function onPlayerJoined(data) {

@@ -2,6 +2,12 @@
  * config.js — Battaglia Navale Smash
  * Contiene tutte le costanti di gioco, i dati dei personaggi (CHARS),
  * le armi (WEAPONS), le piattaforme (PLATS) e i parametri globali.
+ * 
+ * AGGIORNAMENTO v2.0:
+ * - Restyling completo di tutti i personaggi con outfit unici
+ * - Ogni personaggio ha un outfit basato sulle sue abilità
+ * - Mappa migliorata con limiti realistici e stile più bello
+ * - Aggiunti colori secondari per outfit più interessanti
  */
 
 /* ============================================================
@@ -31,6 +37,8 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
    Ogni personaggio ha: nome, emoji (em), colore (col), descrizione (desc),
    nome potere (pow), statistiche (spd, jump, wt, aR, aD, skin) e danno potere (powDmg).
    Il campo 'powType' identifica la logica del potere in powers.js.
+   
+   NUOVO: outfit (colore outfit), outfitAccent (colore accento), outfitDesc (descrizione outfit)
 ============================================================ */
 const CHARS = {
   // ── Personaggi originali ──────────────────────────────────
@@ -40,6 +48,7 @@ const CHARS = {
     powType: 'Brutus',
     spd: 2.8, jump: 11.5, wt: 2.0, aR: 68, aD: 19,
     skin: '#3A1800', powDmg: 30,
+    outfit: '#8B4513', outfitAccent: '#FFD700', outfitDesc: 'Armatura da Guerriero',
   },
   Tornari: {
     nome: 'Tornari', em: '🌀', col: '#00d4ff',
@@ -47,6 +56,7 @@ const CHARS = {
     powType: 'Tornari',
     spd: 3.8, jump: 13, wt: 0.9, aR: 58, aD: 13,
     skin: '#001833', powDmg: 35,
+    outfit: '#1E90FF', outfitAccent: '#00FFFF', outfitDesc: 'Tuta Aerodinamica',
   },
   Scottex: {
     nome: 'Scottex', em: '🧻', col: '#ccccff',
@@ -54,6 +64,7 @@ const CHARS = {
     powType: 'Scottex',
     spd: 3.2, jump: 12, wt: 1.1, aR: 55, aD: 10,
     skin: '#666688', powDmg: 0,
+    outfit: '#FFFFFF', outfitAccent: '#E0E0E0', outfitDesc: 'Costume Assorbente',
   },
   Ercolano: {
     nome: 'Ercolano', em: '🌋', col: '#ff6b00',
@@ -61,6 +72,7 @@ const CHARS = {
     powType: 'Ercolano',
     spd: 2.2, jump: 10, wt: 2.0, aR: 72, aD: 19,
     skin: '#4A1A00', powDmg: 40,
+    outfit: '#DC143C', outfitAccent: '#FF4500', outfitDesc: 'Armatura Infuocata',
   },
   Pierigoat: {
     nome: 'Pierigoat', em: '🐐', col: '#c77dff',
@@ -68,6 +80,7 @@ const CHARS = {
     powType: 'Pierigoat',
     spd: 3.6, jump: 12, wt: 0.85, aR: 52, aD: 9,
     skin: '#3A006B', powDmg: 45,
+    outfit: '#9370DB', outfitAccent: '#FFD700', outfitDesc: 'Vesti Mistiche',
   },
   GoatNatan: {
     nome: 'GoatNatan', em: '🐟', col: '#00b3ff',
@@ -75,6 +88,7 @@ const CHARS = {
     powType: 'GoatNatan',
     spd: 4.4, jump: 12, wt: 1.0, aR: 50, aD: 8,
     skin: '#001A33', powDmg: 50,
+    outfit: '#20B2AA', outfitAccent: '#00CED1', outfitDesc: 'Corazza Marina',
   },
   Marcello: {
     nome: 'Marcello', em: '📡', col: '#00ff6a',
@@ -82,6 +96,7 @@ const CHARS = {
     powType: 'Marcello',
     spd: 3.1, jump: 12, wt: 1.0, aR: 42, aD: 7,
     skin: '#001A0D', powDmg: 38,
+    outfit: '#32CD32', outfitAccent: '#00FF00', outfitDesc: 'Tuta Tecnologica',
   },
   Taji: {
     nome: 'Taji', em: '🥷', col: '#ff003c',
@@ -89,6 +104,7 @@ const CHARS = {
     powType: 'Taji',
     spd: 5.0, jump: 13, wt: 0.8, aR: 44, aD: 11,
     skin: '#150008', powDmg: 55,
+    outfit: '#1C1C1C', outfitAccent: '#FF1493', outfitDesc: 'Abito Ninja Oscuro',
   },
 
   // ── 13 Nuovi Personaggi ───────────────────────────────────
@@ -98,6 +114,7 @@ const CHARS = {
     powType: 'armata_nani',
     spd: 3.0, jump: 11, wt: 1.5, aR: 60, aD: 14,
     skin: '#5C3A1E', powDmg: 28,
+    outfit: '#8B7355', outfitAccent: '#FFD700', outfitDesc: 'Armatura da Capo',
   },
   Bolly: {
     nome: 'Bolly', em: '🎈', col: '#ff69b4',
@@ -105,6 +122,7 @@ const CHARS = {
     powType: 'gigantismo',
     spd: 2.6, jump: 14.5, wt: 0.7, aR: 48, aD: 8,
     skin: '#4A1A4A', powDmg: 20,
+    outfit: '#FF1493', outfitAccent: '#FFB6C1', outfitDesc: 'Costume Elastico',
   },
   Cappels: {
     nome: 'Cappels', em: '🎩', col: '#1a237e',
@@ -112,6 +130,7 @@ const CHARS = {
     powType: 'onda_musicale',
     spd: 3.3, jump: 12, wt: 1.0, aR: 56, aD: 12,
     skin: '#0D1B5E', powDmg: 32,
+    outfit: '#191970', outfitAccent: '#FFD700', outfitDesc: 'Abito da Mago',
   },
   Cerchioni: {
     nome: 'Cerchioni', em: '🛞', col: '#9e9e9e',
@@ -119,6 +138,7 @@ const CHARS = {
     powType: 'turbo_derapata',
     spd: 5.5, jump: 10, wt: 1.8, aR: 65, aD: 16,
     skin: '#424242', powDmg: 35,
+    outfit: '#2F4F4F', outfitAccent: '#FF6347', outfitDesc: 'Tuta da Pilota',
   },
   JoeySchiatti: {
     nome: 'Joey Schiatti', em: '💀', col: '#212121',
@@ -126,6 +146,7 @@ const CHARS = {
     powType: 'presa_tombale',
     spd: 2.5, jump: 10.5, wt: 1.6, aR: 70, aD: 18,
     skin: '#1a1a1a', powDmg: 45,
+    outfit: '#2F4F4F', outfitAccent: '#FFFFFF', outfitDesc: 'Mantello Spettrale',
   },
   Coppa: {
     nome: 'Coppa', em: '🏆', col: '#ffd700',
@@ -133,6 +154,7 @@ const CHARS = {
     powType: 'luce_vittoria',
     spd: 3.4, jump: 12, wt: 1.2, aR: 58, aD: 13,
     skin: '#7B5800', powDmg: 38,
+    outfit: '#FFD700', outfitAccent: '#FFA500', outfitDesc: 'Armatura Dorata',
   },
   DB: {
     nome: 'DB', em: '💾', col: '#00e676',
@@ -140,6 +162,7 @@ const CHARS = {
     powType: 'system_error',
     spd: 3.7, jump: 12.5, wt: 0.9, aR: 50, aD: 10,
     skin: '#003300', powDmg: 25,
+    outfit: '#00AA00', outfitAccent: '#00FF00', outfitDesc: 'Tuta Digitale',
   },
   Giuls: {
     nome: 'Giuls', em: '🎀', col: '#ffeb3b',
@@ -147,6 +170,7 @@ const CHARS = {
     powType: 'pasticcini_esplosivi',
     spd: 3.5, jump: 12, wt: 1.0, aR: 52, aD: 11,
     skin: '#5D4037', powDmg: 33,
+    outfit: '#FF69B4', outfitAccent: '#FFB6C1', outfitDesc: 'Abito da Pasticcera',
   },
   Nitrato: {
     nome: 'Nitrato', em: '🧪', col: '#76ff03',
@@ -154,6 +178,7 @@ const CHARS = {
     powType: 'nube_tossica',
     spd: 2.9, jump: 11, wt: 1.3, aR: 62, aD: 15,
     skin: '#1B5E20', powDmg: 30,
+    outfit: '#228B22', outfitAccent: '#00FF00', outfitDesc: 'Tuta Chimica',
   },
   Ogbi: {
     nome: 'Ogbi', em: '🌀', col: '#00bcd4',
@@ -161,6 +186,7 @@ const CHARS = {
     powType: 'vortice',
     spd: 3.6, jump: 13, wt: 0.8, aR: 55, aD: 10,
     skin: '#006064', powDmg: 28,
+    outfit: '#00CED1', outfitAccent: '#40E0D0', outfitDesc: 'Armatura Vorticosa',
   },
   Pingus: {
     nome: 'Pingus', em: '🐧', col: '#eceff1',
@@ -168,6 +194,7 @@ const CHARS = {
     powType: 'scivolata_glaciale',
     spd: 4.2, jump: 11, wt: 1.4, aR: 60, aD: 14,
     skin: '#263238', powDmg: 30,
+    outfit: '#000000', outfitAccent: '#FFFFFF', outfitDesc: 'Corazza Glaciale',
   },
   Taff: {
     nome: 'Taff', em: '🍬', col: '#fffde7',
@@ -175,6 +202,7 @@ const CHARS = {
     powType: 'troppa_aura',
     spd: 3.8, jump: 13, wt: 0.7, aR: 50, aD: 9,
     skin: '#F9A825', powDmg: 0,
+    outfit: '#FFD700', outfitAccent: '#FFFF00', outfitDesc: 'Abito Luminoso',
   },
   Chivez: {
     nome: 'Chivez', em: '🌶️', col: '#d32f2f',
@@ -182,6 +210,7 @@ const CHARS = {
     powType: 'furia_piccante',
     spd: 4.8, jump: 12, wt: 1.1, aR: 55, aD: 17,
     skin: '#7f0000', powDmg: 42,
+    outfit: '#FF4500', outfitAccent: '#FF6347', outfitDesc: 'Armatura Infuocata',
   },
 };
 
@@ -202,19 +231,24 @@ const WEAPONS = [
    PIATTAFORME — Array PLATS
    Coordinate relative (rx, ry = posizione, rw, rh = dimensioni).
    main:true indica la piattaforma principale (pavimento).
+   
+   AGGIORNAMENTO v2.0:
+   - Mappa ridimensionata con limiti realistici
+   - Piattaforme riposizionate per un gameplay più bilanciato
+   - Aggiunto supporto per stile realistico
 ============================================================ */
 const PLATS = [
-  { rx: 0.15, ry: 0.84, rw: 0.7,   rh: 0.06,  main: true  }, // Isola centrale
-  { rx: 0.22, ry: 0.63, rw: 0.18, rh: 0.025, main: false },
-  { rx: 0.60, ry: 0.63, rw: 0.18, rh: 0.025, main: false },
-  { rx: 0.38, ry: 0.49, rw: 0.24, rh: 0.025, main: false },
-  { rx: 0.08, ry: 0.73, rw: 0.11, rh: 0.018, main: false },
-  { rx: 0.81, ry: 0.73, rw: 0.11, rh: 0.018, main: false },
+  { rx: 0.15, ry: 0.84, rw: 0.7,   rh: 0.06,  main: true, style: 'main'  }, // Isola centrale principale
+  { rx: 0.22, ry: 0.63, rw: 0.18, rh: 0.025, main: false, style: 'platform' },
+  { rx: 0.60, ry: 0.63, rw: 0.18, rh: 0.025, main: false, style: 'platform' },
+  { rx: 0.38, ry: 0.49, rw: 0.24, rh: 0.025, main: false, style: 'platform' },
+  { rx: 0.08, ry: 0.73, rw: 0.11, rh: 0.018, main: false, style: 'platform' },
+  { rx: 0.81, ry: 0.73, rw: 0.11, rh: 0.018, main: false, style: 'platform' },
 ];
 
 /* ============================================================
    CONFIGURAZIONE TELECAMERA — CAMERA_CONFIG
-   Parametri per la mappa infinita e telecamera dinamica.
+   Parametri per la mappa con limiti definiti e telecamera dinamica.
 ============================================================ */
 const CAMERA_CONFIG = {
   minZoom: 0.6,      // Zoom minimo quando i giocatori sono lontani
@@ -227,15 +261,15 @@ const CAMERA_CONFIG = {
 };
 
 /* ============================================================
-   ZONE DI KILL — KZ (Deprecato: usare CAMERA_CONFIG.killZoneBottom)
-   Mantenuto per compatibilità retroattiva.
+   LIMITI DELLA MAPPA — MAP_LIMITS
+   Definisce i bordi della mappa con limiti realistici (non infiniti).
+   I giocatori non possono superare questi limiti.
 ============================================================ */
-// Limiti della mappa (frazioni della larghezza/altezza canvas)
 const MAP_LIMITS = {
-  L: -0.2,   // Limite sinistro
-  R: 1.2,    // Limite destro
-  T: -0.5,   // Limite superiore
-  B: 1.5     // Limite inferiore (mantenuto per caduta)
+  L: -0.15,   // Limite sinistro (ridotto da -0.2 per mappa più realistica)
+  R: 1.15,    // Limite destro (ridotto da 1.2 per mappa più realistica)
+  T: -0.3,    // Limite superiore (ridotto da -0.5)
+  B: 1.5      // Limite inferiore (mantenuto per caduta nel vuoto)
 };
 
 const KZ = { L: MAP_LIMITS.L, R: MAP_LIMITS.R, T: MAP_LIMITS.T, B: MAP_LIMITS.B };

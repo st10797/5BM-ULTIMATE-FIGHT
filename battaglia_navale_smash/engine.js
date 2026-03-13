@@ -1289,28 +1289,37 @@ function drawBoundaries() {
   const L = W * MAP_LIMITS.L, R = W * MAP_LIMITS.R, T = H * MAP_LIMITS.T, B = H * MAP_LIMITS.B;
 
   cx.save();
-  // Stile dei bordi: neon rosso pulsante
   const pulse = 0.5 + 0.5 * Math.sin(bgT * 2.5);
-  cx.strokeStyle = `rgba(255, 40, 100, ${0.3 + 0.3 * pulse})`;
-  cx.lineWidth = 8 / camZoom; // Mantieni spessore costante a prescindere dallo zoom
-  cx.setLineDash([20, 15]);
-  cx.lineDashOffset = -bgT * 40;
-
-  // Rettangolo dei confini
+  const pulseIntense = 0.6 + 0.4 * Math.sin(bgT * 3.2);
+  
+  // Linea principale dei bordi con stile realistico
+  cx.strokeStyle = `rgba(200, 60, 150, ${0.4 + 0.2 * pulse})`;
+  cx.lineWidth = 6 / camZoom;
+  cx.setLineDash([25, 10]);
+  cx.lineDashOffset = -bgT * 50;
   cx.strokeRect(L, T, R - L, B - T);
 
-  // Effetto "barriera" ai bordi
-  const gradL = cx.createLinearGradient(L, 0, L + 100, 0);
-  gradL.addColorStop(0, `rgba(255, 40, 100, ${0.15 * pulse})`);
-  gradL.addColorStop(1, 'rgba(255, 40, 100, 0)');
+  // Effetto barriera energetica ai bordi
+  const gradL = cx.createLinearGradient(L, 0, L + 120, 0);
+  gradL.addColorStop(0, `rgba(200, 60, 150, ${0.25 * pulseIntense})`);
+  gradL.addColorStop(0.5, `rgba(150, 100, 200, ${0.15 * pulse})`);
+  gradL.addColorStop(1, 'rgba(200, 60, 150, 0)');
   cx.fillStyle = gradL;
-  cx.fillRect(L, T, 100, B - T);
+  cx.fillRect(L, T, 120, B - T);
 
-  const gradR = cx.createLinearGradient(R, 0, R - 100, 0);
-  gradR.addColorStop(0, `rgba(255, 40, 100, ${0.15 * pulse})`);
-  gradR.addColorStop(1, 'rgba(255, 40, 100, 0)');
+  const gradR = cx.createLinearGradient(R, 0, R - 120, 0);
+  gradR.addColorStop(0, `rgba(200, 60, 150, ${0.25 * pulseIntense})`);
+  gradR.addColorStop(0.5, `rgba(150, 100, 200, ${0.15 * pulse})`);
+  gradR.addColorStop(1, 'rgba(200, 60, 150, 0)');
   cx.fillStyle = gradR;
-  cx.fillRect(R - 100, T, 100, B - T);
+  cx.fillRect(R - 120, T, 120, B - T);
+
+  // Effetto barriera superiore
+  const gradT = cx.createLinearGradient(0, T, 0, T + 80);
+  gradT.addColorStop(0, `rgba(200, 60, 150, ${0.2 * pulseIntense})`);
+  gradT.addColorStop(1, 'rgba(200, 60, 150, 0)');
+  cx.fillStyle = gradT;
+  cx.fillRect(L, T, R - L, 80);
 
   cx.restore();
 }
@@ -1623,16 +1632,22 @@ function drawPlayer(pi) {
   cx.fillStyle = lerpColor(ch.col, -0.28); cx.beginPath(); cx.roundRect(-LW / 2, LH * 0.88, LW + 5, LH * 0.18, 3); cx.fill();
   cx.restore();
 
-  // CORPO
+  // CORPO — Outfit unico per ogni personaggio
   const bGrad = cx.createLinearGradient(-BW / 2, -BH / 2, BW / 2, BH / 2);
-  bGrad.addColorStop(0, lerpColor(ch.col, 0.18)); bGrad.addColorStop(1, lerpColor(ch.col, -0.28));
-  cx.fillStyle = bGrad; cx.shadowBlur = 10; cx.shadowColor = ch.col + '88';
+  const outfitColor = ch.outfit || ch.col;
+  const outfitAccent = ch.outfitAccent || lerpColor(ch.col, 0.18);
+  bGrad.addColorStop(0, outfitAccent); bGrad.addColorStop(1, lerpColor(outfitColor, -0.28));
+  cx.fillStyle = bGrad; cx.shadowBlur = 10; cx.shadowColor = outfitColor + '88';
   cx.beginPath(); cx.roundRect(-BW / 2, -BH / 2, BW, BH, 6); cx.fill();
   cx.shadowBlur = 0;
-  // Riflesso sul corpo
+  // Riflesso sul corpo con accento outfit
   const bShine = cx.createLinearGradient(-BW / 2, -BH / 2, BW * 0.3, BH * 0.1);
   bShine.addColorStop(0, 'rgba(255,255,255,.22)'); bShine.addColorStop(1, 'rgba(255,255,255,0)');
   cx.fillStyle = bShine; cx.beginPath(); cx.roundRect(-BW / 2, -BH / 2, BW, BH, 6); cx.fill();
+  // Dettagli outfit (strisce, pattern)
+  cx.strokeStyle = outfitAccent; cx.lineWidth = 1.2; cx.globalAlpha = 0.4;
+  cx.beginPath(); cx.moveTo(-BW / 2 + 4, -BH / 2 + 8); cx.lineTo(BW / 2 - 4, -BH / 2 + 8); cx.stroke();
+  cx.globalAlpha = 1;
 
   // BRACCIO POSTERIORE
   const ah2 = AH * 0.5;
@@ -1727,6 +1742,11 @@ function drawPlayer(pi) {
   cx.font = 'bold 10px Nunito,sans-serif'; cx.textAlign = 'center';
   cx.fillStyle = pp.col; cx.globalAlpha = 0.6;
   cx.fillText('P' + (pi + 1), bcx, pp.y - 12); cx.globalAlpha = 1;
+
+  // Restyling outfit personaggi
+  if (typeof drawCharacterWithOutfit === 'function') {
+    drawCharacterWithOutfit(pi, pp.cid);
+  }
 }
 
 /* ============================================================
@@ -2131,6 +2151,11 @@ function loop(ts) {
   
   // Disegna i confini e gli elementi del mondo trasformati
   drawBoundaries();
+  
+  // Miglioramenti mappa realistici
+  if (typeof renderMapEnhancements === 'function') {
+    renderMapEnhancements();
+  }
   
   // Effetto bagliore globale dell'arena
   cx.save();
