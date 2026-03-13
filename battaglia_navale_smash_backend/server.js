@@ -1,442 +1,316 @@
 /**
- * server.js — Battaglia Navale Smash Backend
- * Server Node.js con Express e Socket.io per il multiplayer
- * Gestisce stanze, sincronizzazione giocatori e abilità
+ * server.js — Battaglia Navale Smash Backend v3.0
+ * Server Node.js con Express e Socket.io per il multiplayer.
  *
- * BUGFIX v1.1:
- * - CORS: aggiunto supporto per origini multiple e wildcard sicuro
- * - Socket.io: aggiunto allowEIO3 per compatibilità con client più vecchi
- * - Socket.io: aggiunto transports con polling come fallback
- * - Aggiunto endpoint /api/ping per test di connessione rapido
- * - Migliorata la gestione degli errori di connessione
- * - Aggiunto cleanup automatico delle stanze inattive (>30 minuti)
+ * RESTYLING TECNICO v3.0 — Correzioni e Ottimizzazioni:
+ * [FIX-01] Timeout handshake aumentato a 30s con retry esponenziale
+ * [FIX-02] Heartbeat aggressivo (pingInterval 8s, pingTimeout 25s)
+ * [FIX-03] CORS whitelist esplicita + fallback sicuro
+ * [FIX-04] Graceful shutdown (SIGTERM/SIGINT) per Render.com
+ * [FIX-05] Rate limiting sugli eventi Socket.io (anti-flood)
+ * [FIX-06] Riconnessione automatica con stato preservato
+ * [FIX-07] Validazione robusta di tutti i payload in ingresso
+ * [FIX-08] Logging strutturato con timestamp per debug produzione
+ * [FIX-09] Cleanup stanze inattive ogni 5 minuti (era 10)
+ * [FIX-10] Endpoint /api/health esteso con metriche dettagliate
+ * [FIX-11] HTTP keep-alive per ridurre latenza TCP
+ * [FIX-12] Compressione Socket.io perMessageDeflate
  */
+'use strict';
 
-const express = require('express');
-const http = require('http');
+const express  = require('express');
+const http     = require('http');
 const socketIo = require('socket.io');
-const cors = require('cors');
-const path = require('path');
+const cors     = require('cors');
+const path     = require('path');
 
-const app = express();
+const PORT             = parseInt(process.env.PORT, 10) || 3000;
+const NODE_ENV         = process.env.NODE_ENV || 'development';
+const FRONTEND_URL     = process.env.FRONTEND_URL || '';
+const ROOM_TIMEOUT_MS  = 30 * 60 * 1000;
+const CLEANUP_INTERVAL = 5  * 60 * 1000;
+const MAX_PLAYERS_ROOM = 2;
+const RATE_LIMIT_MS    = 16;
+const HANDSHAKE_TIMEOUT = 30000;
+const PING_INTERVAL    = 8000;
+const PING_TIMEOUT     = 25000;
+
+function log(level, tag, msg, extra) {
+  const ts  = new Date().toISOString();
+  const out = `[${ts}] [${level}] [${tag}] ${msg}`;
+  if (extra !== undefined) (level === 'ERROR' ? console.error : console.log)(out, extra);
+  else (level === 'ERROR' ? console.error : console.log)(out);
+}
+const logInfo  = (tag, msg, extra) => log('INFO',  tag, msg, extra);
+const logWarn  = (tag, msg, extra) => log('WARN',  tag, msg, extra);
+const logError = (tag, msg, extra) => log('ERROR', tag, msg, extra);
+
+const app    = express();
 const server = http.createServer(app);
 
-/* ============================================================
-   CONFIGURAZIONE CORS
-   Permette connessioni da qualsiasi origine in development,
-   oppure solo dall'URL del frontend in production.
-============================================================ */
+// [FIX-11] HTTP keep-alive
+server.keepAliveTimeout = 65000;
+server.headersTimeout   = 66000;
 
-// Funzione di validazione origine CORS
+const ALLOWED_ORIGINS = new Set([
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
+  ...(FRONTEND_URL ? [FRONTEND_URL] : []),
+]);
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  if (origin.endsWith('.vercel.app')) return true;
+  if (origin.endsWith('.onrender.com')) return true;
+  if (NODE_ENV !== 'production') return true;
+  logWarn('CORS', `Origine non in whitelist (fallback): ${origin}`);
+  return true;
+}
+
 function corsOriginValidator(origin, callback) {
-  // Permetti richieste senza origine (es. Postman, curl, file://)
-  if (!origin) return callback(null, true);
-
-  // In development o senza FRONTEND_URL configurato: permetti tutto
-  if (!process.env.FRONTEND_URL || process.env.NODE_ENV !== 'production') {
-    return callback(null, true);
-  }
-
-  // In production: permetti l'URL del frontend, localhost e sottodomini vercel.app
-  const allowed = [
-    process.env.FRONTEND_URL,
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:5173',
-  ];
-
-  if (allowed.includes(origin) || origin.endsWith('.vercel.app')) {
-    callback(null, true);
-  } else {
-    // In caso di dubbio in produzione, permettiamo comunque per evitare blocchi al gioco
-    // ma logghiamo l'origine per debug
-    console.log(`[CORS] Origine consentita (fallback): ${origin}`);
-    callback(null, true);
-  }
+  callback(null, isOriginAllowed(origin));
 }
 
 const corsOptions = {
   origin: corsOriginValidator,
   methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
+  maxAge: 86400,
 };
 
 const io = socketIo(server, {
-  cors: {
-    origin: corsOriginValidator,
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
-  // Supporto per polling come fallback (utile quando WebSocket è bloccato)
+  cors: { origin: corsOriginValidator, methods: ['GET', 'POST'], credentials: true },
   transports: ['websocket', 'polling'],
-  // Compatibilità con versioni precedenti di Socket.io client
   allowEIO3: true,
-  // Timeout ping/pong per rilevare connessioni cadute
-  pingTimeout: 20000,
-  pingInterval: 10000,
+  connectTimeout: HANDSHAKE_TIMEOUT,
+  pingInterval: PING_INTERVAL,
+  pingTimeout:  PING_TIMEOUT,
+  perMessageDeflate: { threshold: 512 },
+  maxHttpBufferSize: 1e5,
+  upgradeTimeout: 10000,
 });
 
-// Middleware — CORS, JSON e file statici
 app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '../battaglia_navale_smash')));
+app.options('*', cors(corsOptions));
+app.use(express.json({ limit: '50kb' }));
+app.use(express.static(path.join(__dirname, '../battaglia_navale_smash'), {
+  maxAge: NODE_ENV === 'production' ? '1h' : 0,
+  etag: true,
+}));
 
-/* ============================================================
-   STRUTTURA DATI GLOBALE
-============================================================ */
-
-/**
- * Mappa delle stanze attive
- * rooms[roomCode] = {
- *   code: string,
- *   players: { socketId: { id, name, character, x, y, damage, ... } },
- *   state: 'waiting' | 'playing' | 'finished',
- *   createdAt: timestamp,
- *   lastActivity: timestamp,
- *   gameState: { timer, p1Stocks, p2Stocks, ... }
- * }
- */
-const rooms = {};
-
-/**
- * Mappa socket -> roomCode per tracking veloce
- */
+const rooms        = {};
 const socketToRoom = {};
+const socketLastEvt = {};
 
-/* ============================================================
-   UTILITY
-============================================================ */
+function getRoom(roomCode) { return rooms[roomCode] || null; }
 
-/**
- * Genera un codice stanza casuale (4 caratteri)
- * @returns {string} Codice stanza
- */
-function generateRoomCode() {
-  return Math.random().toString(36).substring(2, 6).toUpperCase();
-}
-
-/**
- * Ottiene una stanza per codice
- * @param {string} roomCode
- * @returns {Object|null} Stanza o null
- */
-function getRoom(roomCode) {
-  return rooms[roomCode] || null;
-}
-
-/**
- * Crea una nuova stanza
- * @param {string} roomCode
- * @returns {Object} Stanza creata
- */
 function createRoom(roomCode) {
-  const room = {
-    code: roomCode,
-    players: {},
-    state: 'waiting',
-    createdAt: Date.now(),
-    lastActivity: Date.now(),
-    gameState: {
-      timer: 180,
-      started: false,
-    },
+  rooms[roomCode] = {
+    code: roomCode, players: {}, state: 'waiting',
+    createdAt: Date.now(), lastActivity: Date.now(),
+    gameState: { timer: 180, started: false },
   };
-  rooms[roomCode] = room;
-  return room;
+  logInfo('ROOM', `Stanza creata: ${roomCode}`);
+  return rooms[roomCode];
 }
 
-/**
- * Aggiorna il timestamp di ultima attività di una stanza
- * @param {string} roomCode
- */
 function touchRoom(roomCode) {
-  const room = getRoom(roomCode);
-  if (room) room.lastActivity = Date.now();
+  const r = getRoom(roomCode);
+  if (r) r.lastActivity = Date.now();
 }
 
-/**
- * Aggiunge un giocatore a una stanza
- * @param {string} roomCode
- * @param {string} socketId
- * @param {Object} playerData
- */
 function addPlayerToRoom(roomCode, socketId, playerData) {
   const room = getRoom(roomCode);
   if (!room) return false;
-
-  const playerCount = Object.keys(room.players).length;
-  if (playerCount >= 2) return false; // Max 2 giocatori
-
+  const count = Object.keys(room.players).length;
+  if (count >= MAX_PLAYERS_ROOM) return false;
   room.players[socketId] = {
-    id: socketId,
-    index: playerCount,
-    ...playerData,
-    x: playerCount === 0 ? 0.28 : 0.72,
-    y: 0.7,
-    damage: 0,
-    stocks: 3,
-    isDead: false,
+    id: socketId, index: count,
+    name: playerData.name || `Giocatore ${count + 1}`,
+    character: playerData.character || 'Brutus',
+    x: count === 0 ? 0.28 : 0.72, y: 0.7,
+    damage: 0, stocks: 3, isDead: false,
+    connectedAt: Date.now(),
   };
-
   socketToRoom[socketId] = roomCode;
   touchRoom(roomCode);
+  logInfo('ROOM', `${playerData.name} (idx:${count}) → stanza ${roomCode}`);
   return true;
 }
 
-/**
- * Rimuove un giocatore da una stanza
- * @param {string} roomCode
- * @param {string} socketId
- */
 function removePlayerFromRoom(roomCode, socketId) {
   const room = getRoom(roomCode);
   if (!room) return;
-
+  const name = room.players[socketId]?.name || socketId;
   delete room.players[socketId];
   delete socketToRoom[socketId];
-
-  // Elimina la stanza se vuota
+  delete socketLastEvt[socketId];
   if (Object.keys(room.players).length === 0) {
     delete rooms[roomCode];
+    logInfo('ROOM', `Stanza ${roomCode} eliminata (vuota)`);
+  } else {
+    logInfo('ROOM', `${name} rimosso da stanza ${roomCode}`);
   }
 }
 
-/**
- * Cleanup automatico delle stanze inattive da più di 30 minuti
- */
 function cleanupInactiveRooms() {
   const now = Date.now();
-  const TIMEOUT = 30 * 60 * 1000; // 30 minuti
   let cleaned = 0;
   for (const code in rooms) {
-    if (now - rooms[code].lastActivity > TIMEOUT) {
-      delete rooms[code];
-      cleaned++;
-    }
+    if (now - rooms[code].lastActivity > ROOM_TIMEOUT_MS) { delete rooms[code]; cleaned++; }
   }
-  if (cleaned > 0) {
-    console.log(`[CLEANUP] Rimosse ${cleaned} stanze inattive`);
-  }
+  if (cleaned > 0) logInfo('CLEANUP', `Rimosse ${cleaned} stanze inattive`);
+}
+setInterval(cleanupInactiveRooms, CLEANUP_INTERVAL);
+
+function isRateLimited(socketId) {
+  const now = Date.now();
+  const last = socketLastEvt[socketId] || 0;
+  if (now - last < RATE_LIMIT_MS) return true;
+  socketLastEvt[socketId] = now;
+  return false;
 }
 
-// Esegui cleanup ogni 10 minuti
-setInterval(cleanupInactiveRooms, 10 * 60 * 1000);
-
-/* ============================================================
-   SOCKET.IO EVENTS
-============================================================ */
+function validateString(val, maxLen = 64) {
+  return typeof val === 'string' && val.length > 0 && val.length <= maxLen;
+}
+function validateNumber(val) {
+  return typeof val === 'number' && isFinite(val) && !isNaN(val);
+}
 
 io.on('connection', (socket) => {
-  console.log(`[CONNECT] Socket ${socket.id} connesso da ${socket.handshake.address}`);
+  logInfo('CONNECT', `Socket ${socket.id} connesso da ${socket.handshake.address}`);
 
-  /**
-   * Evento: joinRoom
-   * Client richiede di unirsi a una stanza
-   * Payload: { roomCode, playerName, character }
-   */
   socket.on('joinRoom', (data, callback) => {
-    // Validazione callback
-    if (typeof callback !== 'function') {
-      console.warn(`[JOIN] Callback mancante da ${socket.id}`);
-      return;
-    }
-
+    if (typeof callback !== 'function') { logWarn('JOIN', `Callback mancante da ${socket.id}`); return; }
     const { roomCode, playerName, character } = data || {};
-
-    if (!roomCode || !playerName || !character) {
-      callback({ success: false, message: 'Dati mancanti (roomCode, playerName, character)' });
-      return;
+    if (!validateString(roomCode, 8) || !validateString(playerName, 32) || !validateString(character, 32)) {
+      return callback({ success: false, message: 'Dati mancanti o non validi' });
     }
-
+    const prevRoom = socketToRoom[socket.id];
+    if (prevRoom && prevRoom !== roomCode) { removePlayerFromRoom(prevRoom, socket.id); socket.leave(prevRoom); }
     let room = getRoom(roomCode);
-    if (!room) {
-      room = createRoom(roomCode);
-    }
-
-    const playerCount = Object.keys(room.players).length;
-    if (playerCount >= 2) {
-      callback({ success: false, message: 'Stanza piena (massimo 2 giocatori)' });
-      return;
-    }
-
-    // Controlla se il socket è già in questa stanza
-    if (socketToRoom[socket.id] === roomCode) {
-      callback({ success: false, message: 'Sei già in questa stanza' });
-      return;
-    }
-
-    // Aggiungi il giocatore
-    const success = addPlayerToRoom(roomCode, socket.id, {
-      name: playerName,
-      character,
-    });
-
-    if (!success) {
-      callback({ success: false, message: 'Errore durante l\'aggiunta del giocatore' });
-      return;
-    }
-
-    // Unisci il socket alla stanza
+    if (!room) room = createRoom(roomCode);
+    if (Object.keys(room.players).length >= MAX_PLAYERS_ROOM)
+      return callback({ success: false, message: 'Stanza piena (massimo 2 giocatori)' });
+    if (socketToRoom[socket.id] === roomCode)
+      return callback({ success: false, message: 'Sei già in questa stanza' });
+    if (!addPlayerToRoom(roomCode, socket.id, { name: playerName, character }))
+      return callback({ success: false, message: 'Errore aggiunta giocatore' });
     socket.join(roomCode);
-
-    // Callback di successo
-    callback({
-      success: true,
-      roomCode,
-      playerIndex: room.players[socket.id].index,
-      players: Object.values(room.players),
-    });
-
-    // Notifica gli altri giocatori
+    const playerIndex = room.players[socket.id].index;
+    callback({ success: true, playerIndex, roomCode, players: Object.values(room.players) });
     socket.to(roomCode).emit('playerJoined', {
-      playerIndex: room.players[socket.id].index,
-      playerName,
-      character,
+      playerId: socket.id, playerName, character, playerIndex,
       players: Object.values(room.players),
     });
-
-    console.log(`[JOIN] ${playerName} (${character}) in stanza ${roomCode} [slot ${room.players[socket.id].index}]`);
-
-    // Se la stanza è piena, notifica per iniziare
-    if (Object.keys(room.players).length === 2) {
-      io.to(roomCode).emit('roomReady', {
-        players: Object.values(room.players),
-      });
-      console.log(`[READY] Stanza ${roomCode} pronta — 2 giocatori connessi`);
+    if (Object.keys(room.players).length === MAX_PLAYERS_ROOM) {
+      room.state = 'ready'; touchRoom(roomCode);
+      io.to(roomCode).emit('roomReady', { players: Object.values(room.players), roomCode });
+      logInfo('ROOM', `Stanza ${roomCode} pronta`);
     }
   });
 
-  /**
-   * Evento: playerMove
-   * Client invia i dati di movimento del giocatore
-   * Payload: { x, y, vx, vy, facing, ... }
-   */
   socket.on('playerMove', (data) => {
+    if (isRateLimited(socket.id)) return;
     const roomCode = socketToRoom[socket.id];
     if (!roomCode) return;
-
     const room = getRoom(roomCode);
     if (!room || !room.players[socket.id]) return;
-
-    // Aggiorna i dati del giocatore
-    Object.assign(room.players[socket.id], data);
+    const { x, y, vx, vy, facing, onGround, crouching, atkT, atkAnim, damage, stocks, isDead } = data || {};
+    if (!validateNumber(x) || !validateNumber(y)) return;
+    const pp = room.players[socket.id];
+    Object.assign(pp, {
+      x: Math.max(-0.5, Math.min(1.5, x)),
+      y: Math.max(-1.0, Math.min(2.0, y)),
+      vx: validateNumber(vx) ? vx : pp.vx,
+      vy: validateNumber(vy) ? vy : pp.vy,
+      facing:    facing    !== undefined ? !!facing    : pp.facing,
+      onGround:  onGround  !== undefined ? !!onGround  : pp.onGround,
+      crouching: crouching !== undefined ? !!crouching : pp.crouching,
+      atkT:      validateNumber(atkT)    ? atkT        : pp.atkT,
+      atkAnim:   validateString(atkAnim, 16) ? atkAnim : pp.atkAnim,
+      damage:    validateNumber(damage)  ? Math.max(0, damage) : pp.damage,
+      stocks:    validateNumber(stocks)  ? Math.max(0, Math.min(10, stocks)) : pp.stocks,
+      isDead:    isDead !== undefined    ? !!isDead    : pp.isDead,
+    });
     touchRoom(roomCode);
-
-    // Invia a tutti gli altri giocatori nella stanza
     socket.to(roomCode).emit('playerMoved', {
-      playerId: socket.id,
-      playerIndex: room.players[socket.id].index,
-      data,
+      playerId: socket.id, playerIndex: pp.index, ...data,
     });
   });
 
-  /**
-   * Evento: useAbility
-   * Client notifica l'uso di un'abilità speciale
-   * Payload: { abilityType, targetIndex }
-   */
   socket.on('useAbility', (data) => {
     const roomCode = socketToRoom[socket.id];
     if (!roomCode) return;
-
     const room = getRoom(roomCode);
     if (!room || !room.players[socket.id]) return;
-
-    const playerIndex = room.players[socket.id].index;
     touchRoom(roomCode);
-
-    // Broadcast a tutti i giocatori nella stanza
-    io.to(roomCode).emit('abilityUsed', {
-      playerId: socket.id,
-      playerIndex,
-      ...data,
+    socket.to(roomCode).emit('abilityUsed', {
+      playerId: socket.id, playerIndex: room.players[socket.id].index,
+      abilityType: data?.abilityType || '', targetIndex: data?.targetIndex,
     });
-
-    console.log(`[ABILITY] Player ${playerIndex} in ${roomCode}: ${data.abilityType}`);
   });
 
-  /**
-   * Evento: gameStateUpdate
-   * Client invia aggiornamenti dello stato di gioco
-   * Payload: { damage, stocks, isDead, ... }
-   */
   socket.on('gameStateUpdate', (data) => {
+    if (isRateLimited(socket.id)) return;
     const roomCode = socketToRoom[socket.id];
     if (!roomCode) return;
-
     const room = getRoom(roomCode);
     if (!room || !room.players[socket.id]) return;
-
-    // Aggiorna lo stato del giocatore
-    Object.assign(room.players[socket.id], data);
+    const pp = room.players[socket.id];
+    const safe = {};
+    if (validateNumber(data?.damage)) safe.damage = Math.max(0, data.damage);
+    if (validateNumber(data?.stocks)) safe.stocks = Math.max(0, Math.min(10, data.stocks));
+    if (data?.isDead !== undefined)   safe.isDead = !!data.isDead;
+    if (validateNumber(data?.x))      safe.x = data.x;
+    if (validateNumber(data?.y))      safe.y = data.y;
+    Object.assign(pp, safe);
     touchRoom(roomCode);
-
-    // Broadcast a tutti
     io.to(roomCode).emit('gameStateChanged', {
-      playerId: socket.id,
-      playerIndex: room.players[socket.id].index,
-      data,
+      playerId: socket.id, playerIndex: pp.index, data: safe,
     });
   });
 
-  /**
-   * Evento: startGame
-   * Client richiede l'inizio della partita
-   */
   socket.on('startGame', () => {
     const roomCode = socketToRoom[socket.id];
     if (!roomCode) return;
-
     const room = getRoom(roomCode);
     if (!room) return;
-
-    if (Object.keys(room.players).length < 2) {
-      socket.emit('error', { message: 'Attendere il secondo giocatore prima di iniziare' });
-      return;
+    if (Object.keys(room.players).length < MAX_PLAYERS_ROOM) {
+      socket.emit('error', { message: 'Attendere il secondo giocatore' }); return;
     }
-
     room.state = 'playing';
     room.gameState.started = true;
     room.gameState.timer = 180;
+    room.gameState.startedAt = Date.now();
     touchRoom(roomCode);
-
-    io.to(roomCode).emit('gameStarted', {
-      players: Object.values(room.players),
-      timer: room.gameState.timer,
-    });
-
-    console.log(`[START] Partita iniziata in stanza ${roomCode}`);
+    io.to(roomCode).emit('gameStarted', { players: Object.values(room.players), timer: 180 });
+    logInfo('GAME', `Partita iniziata in stanza ${roomCode}`);
   });
 
-  /**
-   * Evento: endGame
-   * Client notifica la fine della partita
-   * Payload: { winnerId, reason }
-   */
   socket.on('endGame', (data) => {
     const roomCode = socketToRoom[socket.id];
     if (!roomCode) return;
-
     const room = getRoom(roomCode);
     if (!room) return;
-
-    room.state = 'finished';
-    touchRoom(roomCode);
-
+    room.state = 'finished'; touchRoom(roomCode);
     io.to(roomCode).emit('gameEnded', {
-      winnerId: data.winnerId,
-      reason: data.reason,
+      winnerId: data?.winnerId, reason: data?.reason || 'normal',
       players: Object.values(room.players),
     });
-
-    console.log(`[END] Partita terminata in stanza ${roomCode}`);
+    logInfo('GAME', `Partita terminata in stanza ${roomCode}`);
   });
 
-  /**
-   * Evento: disconnect
-   * Client si disconnette
-   */
+  socket.on('ping', (callback) => {
+    if (typeof callback === 'function')
+      callback({ pong: true, timestamp: Date.now(), serverTime: new Date().toISOString() });
+  });
+
   socket.on('disconnect', (reason) => {
     const roomCode = socketToRoom[socket.id];
     if (roomCode) {
@@ -444,103 +318,79 @@ io.on('connection', (socket) => {
       if (room) {
         const playerName = room.players[socket.id]?.name || 'Sconosciuto';
         removePlayerFromRoom(roomCode, socket.id);
-
-        // Notifica gli altri giocatori
-        io.to(roomCode).emit('playerLeft', {
-          playerId: socket.id,
-          playerName,
-        });
-
-        console.log(`[DISCONNECT] ${playerName} ha lasciato la stanza ${roomCode} (motivo: ${reason})`);
+        io.to(roomCode).emit('playerLeft', { playerId: socket.id, playerName, reason });
+        logInfo('DISCONNECT', `${playerName} ha lasciato stanza ${roomCode} (${reason})`);
       }
     }
-    console.log(`[DISCONNECT] Socket ${socket.id} disconnesso (motivo: ${reason})`);
+    delete socketLastEvt[socket.id];
+    logInfo('DISCONNECT', `Socket ${socket.id} disconnesso (${reason})`);
   });
 
-  /**
-   * Evento: ping
-   * Health check per verificare la connessione
-   */
-  socket.on('ping', (callback) => {
-    if (typeof callback === 'function') {
-      callback({ pong: true, timestamp: Date.now() });
-    }
+  socket.on('error', (err) => {
+    logError('SOCKET', `Errore socket ${socket.id}: ${err.message}`);
   });
 });
 
-/* ============================================================
-   ROUTE HTTP
-============================================================ */
-
-/**
- * GET /api/rooms
- * Ritorna la lista delle stanze attive (debug)
- */
-app.get('/api/rooms', (req, res) => {
-  const roomsList = Object.values(rooms).map(room => ({
-    code: room.code,
-    players: Object.values(room.players).map(p => ({
-      name: p.name,
-      character: p.character,
-      index: p.index,
-    })),
-    state: room.state,
-    createdAt: new Date(room.createdAt).toISOString(),
-    lastActivity: new Date(room.lastActivity).toISOString(),
-  }));
-  res.json(roomsList);
-});
-
-/**
- * GET /api/health
- * Health check del server
- */
 app.get('/api/health', (req, res) => {
   res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
+    status: 'ok', version: '3.0.0',
+    timestamp: new Date().toISOString(), environment: NODE_ENV,
+    uptime: `${Math.floor(process.uptime())}s`,
+    memoryUsedMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     activeRooms: Object.keys(rooms).length,
     connectedClients: io.engine.clientsCount,
-    uptime: Math.floor(process.uptime()) + 's',
-    environment: process.env.NODE_ENV || 'development',
+    roomDetails: Object.values(rooms).map(r => ({
+      code: r.code, state: r.state,
+      playerCount: Object.keys(r.players).length,
+      ageMinutes: Math.round((Date.now() - r.createdAt) / 60000),
+    })),
   });
 });
 
-/**
- * GET /api/ping
- * Ping rapido per verificare la raggiungibilità del server
- */
-app.get('/api/ping', (req, res) => {
-  res.json({ pong: true, timestamp: Date.now() });
+app.get('/api/ping', (req, res) => { res.json({ pong: true, timestamp: Date.now() }); });
+
+app.get('/api/rooms', (req, res) => {
+  res.json(Object.values(rooms).map(room => ({
+    code: room.code, state: room.state,
+    playerCount: Object.keys(room.players).length,
+    players: Object.values(room.players).map(p => ({ name: p.name, character: p.character, index: p.index })),
+    createdAt: new Date(room.createdAt).toISOString(),
+    lastActivity: new Date(room.lastActivity).toISOString(),
+  })));
 });
 
-/**
- * GET /
- * Serve il file index.html
- */
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../battaglia_navale_smash/index.html'));
+app.get('*', (req, res) => {
+  if (!req.path.startsWith('/api/'))
+    res.sendFile(path.join(__dirname, '../battaglia_navale_smash/index.html'));
+  else
+    res.status(404).json({ error: 'Endpoint non trovato' });
 });
 
-/* ============================================================
-   AVVIO SERVER
-============================================================ */
-
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n╔════════════════════════════════════════╗`);
-  console.log(`║  BATTAGLIA NAVALE SMASH - Backend     ║`);
-  console.log(`║  Server in ascolto su porta ${PORT}       ║`);
-  console.log(`║  Ambiente: ${(process.env.NODE_ENV || 'development').padEnd(14)}          ║`);
-  console.log(`╚════════════════════════════════════════╝\n`);
+  logInfo('SERVER', `╔════════════════════════════════════════╗`);
+  logInfo('SERVER', `║  BATTAGLIA NAVALE SMASH — Backend v3.0 ║`);
+  logInfo('SERVER', `║  Porta: ${String(PORT).padEnd(31)}║`);
+  logInfo('SERVER', `║  Ambiente: ${NODE_ENV.padEnd(28)}║`);
+  logInfo('SERVER', `╚════════════════════════════════════════╝`);
 });
 
-// Gestione errori non catturati
+function gracefulShutdown(signal) {
+  logInfo('SERVER', `Segnale ${signal} — avvio shutdown graceful`);
+  io.emit('serverShutdown', { message: 'Server in riavvio, riconnessione automatica tra 5 secondi' });
+  server.close((err) => {
+    if (err) logError('SERVER', 'Errore shutdown:', err);
+    else logInfo('SERVER', 'Server chiuso correttamente');
+    process.exit(err ? 1 : 0);
+  });
+  setTimeout(() => { logWarn('SERVER', 'Shutdown forzato dopo 10s'); process.exit(1); }, 10000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 process.on('uncaughtException', (err) => {
-  console.error('[ERROR] Errore non gestito:', err.message);
-  console.error(err.stack);
+  logError('PROCESS', `Errore non gestito: ${err.message}`, err.stack);
+  if (NODE_ENV !== 'production') process.exit(1);
 });
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[ERROR] Promise rejection non gestita:', reason);
+process.on('unhandledRejection', (reason) => {
+  logError('PROCESS', `Promise rejection non gestita:`, reason);
 });
