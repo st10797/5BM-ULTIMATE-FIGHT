@@ -204,12 +204,12 @@ const WEAPONS = [
    main:true indica la piattaforma principale (pavimento).
 ============================================================ */
 const PLATS = [
-  { rx: 0,    ry: 0.84, rw: 1,    rh: 0.06,  main: true  },
-  { rx: 0.12, ry: 0.63, rw: 0.22, rh: 0.025, main: false },
-  { rx: 0.66, ry: 0.63, rw: 0.22, rh: 0.025, main: false },
+  { rx: 0.15, ry: 0.84, rw: 0.7,   rh: 0.06,  main: true  }, // Isola centrale
+  { rx: 0.22, ry: 0.63, rw: 0.18, rh: 0.025, main: false },
+  { rx: 0.60, ry: 0.63, rw: 0.18, rh: 0.025, main: false },
   { rx: 0.38, ry: 0.49, rw: 0.24, rh: 0.025, main: false },
-  { rx: 0.04, ry: 0.73, rw: 0.11, rh: 0.018, main: false },
-  { rx: 0.85, ry: 0.73, rw: 0.11, rh: 0.018, main: false },
+  { rx: 0.08, ry: 0.73, rw: 0.11, rh: 0.018, main: false },
+  { rx: 0.81, ry: 0.73, rw: 0.11, rh: 0.018, main: false },
 ];
 
 /* ============================================================
@@ -230,7 +230,15 @@ const CAMERA_CONFIG = {
    ZONE DI KILL — KZ (Deprecato: usare CAMERA_CONFIG.killZoneBottom)
    Mantenuto per compatibilità retroattiva.
 ============================================================ */
-const KZ = { L: -999, R: 999, T: -999, B: CAMERA_CONFIG.killZoneBottom };
+// Limiti della mappa (frazioni della larghezza/altezza canvas)
+const MAP_LIMITS = {
+  L: -0.2,   // Limite sinistro
+  R: 1.2,    // Limite destro
+  T: -0.5,   // Limite superiore
+  B: 1.5     // Limite inferiore (mantenuto per caduta)
+};
+
+const KZ = { L: MAP_LIMITS.L, R: MAP_LIMITS.R, T: MAP_LIMITS.T, B: MAP_LIMITS.B };
 
 /* ============================================================
    COMBO — Sequenza di attacchi normali

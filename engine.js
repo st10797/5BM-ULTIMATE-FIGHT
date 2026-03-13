@@ -626,20 +626,23 @@ function updPlayer(pi, dt) {
   }
   pp.landSquash = Math.max(0, pp.landSquash - dt * 3.5);
 
-  // Sicurezza: pavimento principale
+  // Sicurezza: pavimento principale (solo se sopra l'isola)
   const mainPl = plats.find(pl => pl.main);
-  if (mainPl && pp.y + pp.h > mainPl.y + 6 && !pp.isDead) {
+  if (mainPl && pp.x + pp.w > mainPl.x && pp.x < mainPl.x + mainPl.w && pp.y + pp.h > mainPl.y + 6 && !pp.isDead) {
     pp.y = mainPl.y - pp.h;
     if (pp.vy > 0) pp.vy = 0;
     pp.onGround = true; pp.jumpCount = 0;
   }
 
-  // Kill zone: fuori dai bordi
-  if (pp.invincT <= 0) {
-    if (
-      pp.x + pp.w < W * KZ.L || pp.x > W * KZ.R ||
-      pp.y + pp.h < H * KZ.T || pp.y > H * KZ.B
-    ) killPlayer(pi);
+  // Limiti fisici della mappa (pareti invisibili)
+  const mapL = W * MAP_LIMITS.L, mapR = W * MAP_LIMITS.R, mapT = H * MAP_LIMITS.T;
+  if (pp.x < mapL) { pp.x = mapL; pp.vx = 0; }
+  if (pp.x + pp.w > mapR) { pp.x = mapR - pp.w; pp.vx = 0; }
+  if (pp.y < mapT) { pp.y = mapT; pp.vy = 0; }
+
+  // Kill zone: solo caduta nel vuoto (B)
+  if (pp.invincT <= 0 && pp.y > H * MAP_LIMITS.B) {
+    killPlayer(pi);
   }
 
   // Animazione arti
@@ -1278,6 +1281,40 @@ function initStars() {
 }
 
 /** Disegna lo sfondo: gradiente stilizzato neon, griglia prospettica, stelle e nebbia */
+/**
+ * Disegna i bordi della mappa per indicare i limiti invalicabili.
+ */
+function drawBoundaries() {
+  const W = cv.width, H = cv.height;
+  const L = W * MAP_LIMITS.L, R = W * MAP_LIMITS.R, T = H * MAP_LIMITS.T, B = H * MAP_LIMITS.B;
+
+  cx.save();
+  // Stile dei bordi: neon rosso pulsante
+  const pulse = 0.5 + 0.5 * Math.sin(bgT * 2.5);
+  cx.strokeStyle = `rgba(255, 40, 100, ${0.3 + 0.3 * pulse})`;
+  cx.lineWidth = 8 / camZoom; // Mantieni spessore costante a prescindere dallo zoom
+  cx.setLineDash([20, 15]);
+  cx.lineDashOffset = -bgT * 40;
+
+  // Rettangolo dei confini
+  cx.strokeRect(L, T, R - L, B - T);
+
+  // Effetto "barriera" ai bordi
+  const gradL = cx.createLinearGradient(L, 0, L + 100, 0);
+  gradL.addColorStop(0, `rgba(255, 40, 100, ${0.15 * pulse})`);
+  gradL.addColorStop(1, 'rgba(255, 40, 100, 0)');
+  cx.fillStyle = gradL;
+  cx.fillRect(L, T, 100, B - T);
+
+  const gradR = cx.createLinearGradient(R, 0, R - 100, 0);
+  gradR.addColorStop(0, `rgba(255, 40, 100, ${0.15 * pulse})`);
+  gradR.addColorStop(1, 'rgba(255, 40, 100, 0)');
+  cx.fillStyle = gradR;
+  cx.fillRect(R - 100, T, 100, B - T);
+
+  cx.restore();
+}
+
 function drawBg() {
   const W = cv.width, H = cv.height;
   // Gradiente base stilizzato — viola/indaco profondo con riflessi neon
@@ -2083,13 +2120,29 @@ function loop(ts) {
 
   cx.clearRect(0, 0, cv.width, cv.height);
   
-  // Applica trasformazione telecamera (mappa infinita)
+  // Disegna lo sfondo statico prima della trasformazione della telecamera
+  drawBg();
+
+  // Applica trasformazione telecamera (mappa dinamica)
   cx.save();
   cx.translate(cv.width / 2, cv.height / 2);
   cx.scale(camZoom, camZoom);
   cx.translate(-camX, -camY);
   
-  drawBg(); drawPlatforms(); drawStageWeapons(); drawEffects(); drawProjectiles();
+  // Disegna i confini e gli elementi del mondo trasformati
+  drawBoundaries();
+  
+  // Effetto bagliore globale dell'arena
+  cx.save();
+  cx.globalCompositeOperation = 'screen';
+  const arenaGlow = cx.createRadialGradient(cv.width/2, cv.height/2, 0, cv.width/2, cv.height/2, cv.width * 0.8);
+  arenaGlow.addColorStop(0, 'rgba(80, 40, 200, 0.05)');
+  arenaGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  cx.fillStyle = arenaGlow;
+  cx.fillRect(-cv.width, -cv.height, cv.width*3, cv.height*3);
+  cx.restore();
+
+  drawPlatforms(); drawStageWeapons(); drawEffects(); drawProjectiles();
 
   // Aggiornamento fisica e logica
   updPlayer(0, dt); updPlayer(1, dt);
