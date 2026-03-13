@@ -1,6 +1,12 @@
 /**
- * server.js — Battaglia Navale Smash Backend v3.0
+ * server.js — Battaglia Navale Smash Backend v4.0
  * Server Node.js con Express e Socket.io per il multiplayer.
+ *
+ * NUOVO FLUSSO v4.0:
+ * 1. createRoom — Crea una stanza senza personaggio
+ * 2. joinRoom — Accedi a una stanza esistente
+ * 3. selectCharacter — Scegli il personaggio in-room
+ * 4. startGame — Avvia la partita quando entrambi hanno scelto
  *
  * RESTYLING TECNICO v3.0 — Correzioni e Ottimizzazioni:
  * [FIX-01] Timeout handshake aumentato a 30s con retry esponenziale
@@ -98,126 +104,181 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '50kb' }));
 app.use(express.static(path.join(__dirname, '../battaglia_navale_smash'), {
-  maxAge: NODE_ENV === 'production' ? '1h' : 0,
-  etag: true,
+  maxAge: '1h', etag: false, setHeaders: (res, path) => {
+    if (path.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+  },
 }));
 
-const rooms        = {};
-const socketToRoom = {};
-const socketLastEvt = {};
+const rooms = new Map();
+const socketToRoom = new Map();
+const socketRateLimits = new Map();
 
-function getRoom(roomCode) { return rooms[roomCode] || null; }
+function validateString(val, maxLen = 256) {
+  return typeof val === 'string' && val.length > 0 && val.length <= maxLen;
+}
+
+function validateNumber(val) {
+  return typeof val === 'number' && isFinite(val) && !isNaN(val);
+}
 
 function createRoom(roomCode) {
-  rooms[roomCode] = {
-    code: roomCode, players: {}, state: 'waiting',
-    createdAt: Date.now(), lastActivity: Date.now(),
-    gameState: { timer: 180, started: false },
+  const room = {
+    code: roomCode,
+    players: {},
+    state: 'waiting',
+    gameState: { started: false, timer: 180, startedAt: null },
+    createdAt: Date.now(),
+    lastActivity: Date.now(),
   };
-  logInfo('ROOM', `Stanza creata: ${roomCode}`);
-  return rooms[roomCode];
+  rooms.set(roomCode, room);
+  logInfo('ROOM', `Stanza ${roomCode} creata`);
+  return room;
+}
+
+function getRoom(roomCode) {
+  return rooms.get(roomCode);
 }
 
 function touchRoom(roomCode) {
-  const r = getRoom(roomCode);
-  if (r) r.lastActivity = Date.now();
+  const room = getRoom(roomCode);
+  if (room) room.lastActivity = Date.now();
 }
 
 function addPlayerToRoom(roomCode, socketId, playerData) {
   const room = getRoom(roomCode);
   if (!room) return false;
-  const count = Object.keys(room.players).length;
-  if (count >= MAX_PLAYERS_ROOM) return false;
+  const index = Object.keys(room.players).length;
   room.players[socketId] = {
-    id: socketId, index: count,
-    name: playerData.name || `Giocatore ${count + 1}`,
-    character: playerData.character || 'Brutus',
-    x: count === 0 ? 0.28 : 0.72, y: 0.7,
-    damage: 0, stocks: 3, isDead: false,
-    connectedAt: Date.now(),
+    id: socketId,
+    index,
+    name: playerData.name || 'Giocatore',
+    character: playerData.character || null,
+    x: 0, y: 0, vx: 0, vy: 0,
+    facing: true, onGround: false, crouching: false,
+    atkT: 0, atkAnim: '', damage: 0, stocks: 3, isDead: false,
   };
-  socketToRoom[socketId] = roomCode;
+  socketToRoom.set(socketId, roomCode);
   touchRoom(roomCode);
-  logInfo('ROOM', `${playerData.name} (idx:${count}) → stanza ${roomCode}`);
   return true;
 }
 
 function removePlayerFromRoom(roomCode, socketId) {
   const room = getRoom(roomCode);
   if (!room) return;
-  const name = room.players[socketId]?.name || socketId;
   delete room.players[socketId];
-  delete socketToRoom[socketId];
-  delete socketLastEvt[socketId];
+  socketToRoom.delete(socketId);
   if (Object.keys(room.players).length === 0) {
-    delete rooms[roomCode];
+    rooms.delete(roomCode);
     logInfo('ROOM', `Stanza ${roomCode} eliminata (vuota)`);
   } else {
-    logInfo('ROOM', `${name} rimosso da stanza ${roomCode}`);
+    touchRoom(roomCode);
+    io.to(roomCode).emit('playerLeft', { playerId: socketId, playerName: 'Sconosciuto' });
   }
 }
-
-function cleanupInactiveRooms() {
-  const now = Date.now();
-  let cleaned = 0;
-  for (const code in rooms) {
-    if (now - rooms[code].lastActivity > ROOM_TIMEOUT_MS) { delete rooms[code]; cleaned++; }
-  }
-  if (cleaned > 0) logInfo('CLEANUP', `Rimosse ${cleaned} stanze inattive`);
-}
-setInterval(cleanupInactiveRooms, CLEANUP_INTERVAL);
 
 function isRateLimited(socketId) {
   const now = Date.now();
-  const last = socketLastEvt[socketId] || 0;
+  const last = socketRateLimits.get(socketId) || 0;
   if (now - last < RATE_LIMIT_MS) return true;
-  socketLastEvt[socketId] = now;
+  socketRateLimits.set(socketId, now);
   return false;
 }
 
-function validateString(val, maxLen = 64) {
-  return typeof val === 'string' && val.length > 0 && val.length <= maxLen;
-}
-function validateNumber(val) {
-  return typeof val === 'number' && isFinite(val) && !isNaN(val);
-}
+// Cleanup stanze inattive
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, room] of rooms.entries()) {
+    if (now - room.lastActivity > ROOM_TIMEOUT_MS) {
+      rooms.delete(code);
+      logWarn('CLEANUP', `Stanza ${code} eliminata (timeout)`);
+    }
+  }
+}, CLEANUP_INTERVAL);
 
 io.on('connection', (socket) => {
   logInfo('CONNECT', `Socket ${socket.id} connesso da ${socket.handshake.address}`);
 
-  socket.on('joinRoom', (data, callback) => {
-    if (typeof callback !== 'function') { logWarn('JOIN', `Callback mancante da ${socket.id}`); return; }
-    const { roomCode, playerName, character } = data || {};
-    if (!validateString(roomCode, 8) || !validateString(playerName, 32) || !validateString(character, 32)) {
+  socket.on('createRoom', (data, callback) => {
+    if (typeof callback !== 'function') { logWarn('CREATE', `Callback mancante da ${socket.id}`); return; }
+    const { roomCode, playerName } = data || {};
+    if (!validateString(roomCode, 8) || !validateString(playerName, 32)) {
       return callback({ success: false, message: 'Dati mancanti o non validi' });
     }
-    const prevRoom = socketToRoom[socket.id];
+    const prevRoom = socketToRoom.get(socket.id);
     if (prevRoom && prevRoom !== roomCode) { removePlayerFromRoom(prevRoom, socket.id); socket.leave(prevRoom); }
     let room = getRoom(roomCode);
     if (!room) room = createRoom(roomCode);
     if (Object.keys(room.players).length >= MAX_PLAYERS_ROOM)
       return callback({ success: false, message: 'Stanza piena (massimo 2 giocatori)' });
-    if (socketToRoom[socket.id] === roomCode)
-      return callback({ success: false, message: 'Sei già in questa stanza' });
-    if (!addPlayerToRoom(roomCode, socket.id, { name: playerName, character }))
+    if (!addPlayerToRoom(roomCode, socket.id, { name: playerName, character: null }))
       return callback({ success: false, message: 'Errore aggiunta giocatore' });
     socket.join(roomCode);
     const playerIndex = room.players[socket.id].index;
     callback({ success: true, playerIndex, roomCode, players: Object.values(room.players) });
+    logInfo('CREATE', `Giocatore ${socket.id} ha creato stanza ${roomCode}`);
+  });
+
+  socket.on('joinRoom', (data, callback) => {
+    if (typeof callback !== 'function') { logWarn('JOIN', `Callback mancante da ${socket.id}`); return; }
+    const { roomCode, playerName } = data || {};
+    if (!validateString(roomCode, 8) || !validateString(playerName, 32)) {
+      return callback({ success: false, message: 'Dati mancanti o non validi' });
+    }
+    const prevRoom = socketToRoom.get(socket.id);
+    if (prevRoom && prevRoom !== roomCode) { removePlayerFromRoom(prevRoom, socket.id); socket.leave(prevRoom); }
+    let room = getRoom(roomCode);
+    if (!room) return callback({ success: false, message: 'Stanza non trovata' });
+    if (Object.keys(room.players).length >= MAX_PLAYERS_ROOM)
+      return callback({ success: false, message: 'Stanza piena (massimo 2 giocatori)' });
+    if (socketToRoom.get(socket.id) === roomCode)
+      return callback({ success: false, message: 'Sei già in questa stanza' });
+    if (!addPlayerToRoom(roomCode, socket.id, { name: playerName, character: null }))
+      return callback({ success: false, message: 'Errore aggiunta giocatore' });
+    socket.join(roomCode);
+    const playerIndex = room.players[socket.id].index;
+    const otherPlayerName = Object.values(room.players).find(p => p.id !== socket.id)?.name || null;
+    callback({ success: true, playerIndex, roomCode, otherPlayerName, players: Object.values(room.players) });
     socket.to(roomCode).emit('playerJoined', {
-      playerId: socket.id, playerName, character, playerIndex,
+      playerId: socket.id, playerName, playerIndex,
       players: Object.values(room.players),
     });
-    if (Object.keys(room.players).length === MAX_PLAYERS_ROOM) {
-      room.state = 'ready'; touchRoom(roomCode);
-      io.to(roomCode).emit('roomReady', { players: Object.values(room.players), roomCode });
-      logInfo('ROOM', `Stanza ${roomCode} pronta`);
+    logInfo('JOIN', `Giocatore ${socket.id} ha acceduto stanza ${roomCode}`);
+  });
+
+  socket.on('rejoinRoom', (data, callback) => {
+    if (typeof callback !== 'function') return;
+    const { roomCode, playerName } = data || {};
+    const room = getRoom(roomCode);
+    if (!room || !room.players[socket.id]) {
+      return callback({ success: false, message: 'Stanza non trovata' });
     }
+    room.players[socket.id].name = playerName;
+    socket.join(roomCode);
+    touchRoom(roomCode);
+    callback({ success: true, playerIndex: room.players[socket.id].index });
+    logInfo('REJOIN', `Giocatore ${socket.id} ha rientrato stanza ${roomCode}`);
+  });
+
+  socket.on('selectCharacter', (data) => {
+    const roomCode = socketToRoom.get(socket.id);
+    if (!roomCode) return;
+    const room = getRoom(roomCode);
+    if (!room || !room.players[socket.id]) return;
+    const { character } = data || {};
+    if (!validateString(character, 32)) return;
+    room.players[socket.id].character = character;
+    touchRoom(roomCode);
+    socket.to(roomCode).emit('playerCharSelected', {
+      playerId: socket.id,
+      playerIndex: room.players[socket.id].index,
+      character,
+    });
+    logInfo('CHAR', `Giocatore ${socket.id} ha scelto ${character} in stanza ${roomCode}`);
   });
 
   socket.on('playerMove', (data) => {
     if (isRateLimited(socket.id)) return;
-    const roomCode = socketToRoom[socket.id];
+    const roomCode = socketToRoom.get(socket.id);
     if (!roomCode) return;
     const room = getRoom(roomCode);
     if (!room || !room.players[socket.id]) return;
@@ -245,7 +306,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('useAbility', (data) => {
-    const roomCode = socketToRoom[socket.id];
+    const roomCode = socketToRoom.get(socket.id);
     if (!roomCode) return;
     const room = getRoom(roomCode);
     if (!room || !room.players[socket.id]) return;
@@ -258,7 +319,7 @@ io.on('connection', (socket) => {
 
   socket.on('gameStateUpdate', (data) => {
     if (isRateLimited(socket.id)) return;
-    const roomCode = socketToRoom[socket.id];
+    const roomCode = socketToRoom.get(socket.id);
     if (!roomCode) return;
     const room = getRoom(roomCode);
     if (!room || !room.players[socket.id]) return;
@@ -277,12 +338,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('startGame', () => {
-    const roomCode = socketToRoom[socket.id];
+    const roomCode = socketToRoom.get(socket.id);
     if (!roomCode) return;
     const room = getRoom(roomCode);
     if (!room) return;
     if (Object.keys(room.players).length < MAX_PLAYERS_ROOM) {
       socket.emit('error', { message: 'Attendere il secondo giocatore' }); return;
+    }
+    const allReady = Object.values(room.players).every(p => p.character);
+    if (!allReady) {
+      socket.emit('error', { message: 'Entrambi i giocatori devono scegliere il personaggio' }); return;
     }
     room.state = 'playing';
     room.gameState.started = true;
@@ -294,7 +359,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('endGame', (data) => {
-    const roomCode = socketToRoom[socket.id];
+    const roomCode = socketToRoom.get(socket.id);
     if (!roomCode) return;
     const room = getRoom(roomCode);
     if (!room) return;
@@ -312,85 +377,70 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', (reason) => {
-    const roomCode = socketToRoom[socket.id];
+    const roomCode = socketToRoom.get(socket.id);
     if (roomCode) {
       const room = getRoom(roomCode);
       if (room) {
         const playerName = room.players[socket.id]?.name || 'Sconosciuto';
         removePlayerFromRoom(roomCode, socket.id);
-        io.to(roomCode).emit('playerLeft', { playerId: socket.id, playerName, reason });
-        logInfo('DISCONNECT', `${playerName} ha lasciato stanza ${roomCode} (${reason})`);
+        if (room.state === 'playing') {
+          io.to(roomCode).emit('playerLeft', { playerId: socket.id, playerName });
+          logWarn('GAME', `Giocatore ${socket.id} disconnesso durante partita in stanza ${roomCode}`);
+        }
       }
     }
-    delete socketLastEvt[socket.id];
+    socketRateLimits.delete(socket.id);
     logInfo('DISCONNECT', `Socket ${socket.id} disconnesso (${reason})`);
   });
 
   socket.on('error', (err) => {
-    logError('SOCKET', `Errore socket ${socket.id}: ${err.message}`);
+    logError('SOCKET_ERROR', `Errore socket ${socket.id}`, err);
   });
 });
 
 app.get('/api/health', (req, res) => {
+  const uptime = process.uptime();
+  const memUsage = process.memoryUsage();
   res.json({
-    status: 'ok', version: '3.0.0',
-    timestamp: new Date().toISOString(), environment: NODE_ENV,
-    uptime: `${Math.floor(process.uptime())}s`,
-    memoryUsedMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-    activeRooms: Object.keys(rooms).length,
-    connectedClients: io.engine.clientsCount,
-    roomDetails: Object.values(rooms).map(r => ({
-      code: r.code, state: r.state,
-      playerCount: Object.keys(r.players).length,
-      ageMinutes: Math.round((Date.now() - r.createdAt) / 60000),
-    })),
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(uptime),
+    memory: {
+      heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+      heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+      external: Math.round(memUsage.external / 1024 / 1024),
+    },
+    rooms: rooms.size,
+    activeSockets: io.engine.clientsCount,
   });
 });
-
-app.get('/api/ping', (req, res) => { res.json({ pong: true, timestamp: Date.now() }); });
 
 app.get('/api/rooms', (req, res) => {
-  res.json(Object.values(rooms).map(room => ({
-    code: room.code, state: room.state,
-    playerCount: Object.keys(room.players).length,
-    players: Object.values(room.players).map(p => ({ name: p.name, character: p.character, index: p.index })),
-    createdAt: new Date(room.createdAt).toISOString(),
-    lastActivity: new Date(room.lastActivity).toISOString(),
-  })));
+  const roomList = Array.from(rooms.values()).map(r => ({
+    code: r.code,
+    players: Object.keys(r.players).length,
+    state: r.state,
+    createdAt: new Date(r.createdAt).toISOString(),
+  }));
+  res.json({ rooms: roomList, total: roomList.length });
 });
 
-app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api/'))
-    res.sendFile(path.join(__dirname, '../battaglia_navale_smash/index.html'));
-  else
-    res.status(404).json({ error: 'Endpoint non trovato' });
-});
-
-server.listen(PORT, '0.0.0.0', () => {
-  logInfo('SERVER', `╔════════════════════════════════════════╗`);
-  logInfo('SERVER', `║  BATTAGLIA NAVALE SMASH — Backend v3.0 ║`);
-  logInfo('SERVER', `║  Porta: ${String(PORT).padEnd(31)}║`);
-  logInfo('SERVER', `║  Ambiente: ${NODE_ENV.padEnd(28)}║`);
-  logInfo('SERVER', `╚════════════════════════════════════════╝`);
-});
-
-function gracefulShutdown(signal) {
-  logInfo('SERVER', `Segnale ${signal} — avvio shutdown graceful`);
-  io.emit('serverShutdown', { message: 'Server in riavvio, riconnessione automatica tra 5 secondi' });
-  server.close((err) => {
-    if (err) logError('SERVER', 'Errore shutdown:', err);
-    else logInfo('SERVER', 'Server chiuso correttamente');
-    process.exit(err ? 1 : 0);
-  });
-  setTimeout(() => { logWarn('SERVER', 'Shutdown forzato dopo 10s'); process.exit(1); }, 10000);
+function gracefulShutdown() {
+  logInfo('SHUTDOWN', 'Graceful shutdown in corso...');
+  io.emit('serverShutdown', { message: 'Server in manutenzione. Riconnessione automatica in 30s.' });
+  setTimeout(() => {
+    io.close();
+    server.close(() => {
+      logInfo('SHUTDOWN', 'Server chiuso');
+      process.exit(0);
+    });
+  }, 2000);
 }
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
-process.on('uncaughtException', (err) => {
-  logError('PROCESS', `Errore non gestito: ${err.message}`, err.stack);
-  if (NODE_ENV !== 'production') process.exit(1);
-});
-process.on('unhandledRejection', (reason) => {
-  logError('PROCESS', `Promise rejection non gestita:`, reason);
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+server.listen(PORT, '0.0.0.0', () => {
+  logInfo('SERVER', `Battaglia Navale Smash Backend v4.0 in ascolto su porta ${PORT}`);
+  logInfo('SERVER', `Ambiente: ${NODE_ENV}`);
 });

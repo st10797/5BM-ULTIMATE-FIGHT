@@ -96,6 +96,11 @@ function showSelect() {
 /** Mostra la schermata pre-fight con le statistiche dei personaggi */
 function showPreFight() {
   if (!sel1 || !sel2) return;
+  // Se siamo in multiplayer online, avvia la partita sul server
+  if (isInMultiplayer && isInMultiplayer()) {
+    mpStartGame();
+    return;
+  }
   hideAll();
   document.getElementById('screen-prefight').classList.remove('hidden');
   buildPreFight();
@@ -198,6 +203,11 @@ function buildGrid() {
  * @param {HTMLElement} card - Elemento DOM della card selezionata
  */
 function pickChar(id, card) {
+  // Se siamo in multiplayer online, usa la funzione dedicata
+  if (isInMultiplayer && isInMultiplayer()) {
+    mpSelectCharacter(id);
+    return;
+  }
   if (selTurn === 1) {
     sel1 = id;
     document.querySelectorAll('.char-card').forEach(c => c.classList.remove('sel'));

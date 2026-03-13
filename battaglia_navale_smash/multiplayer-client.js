@@ -1,5 +1,6 @@
 /**
- * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v3.0
+ * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v4.0
+ * NUOVO FLUSSO: 1. Crea/Accedi stanza -> 2. Selezione personaggi in-room -> 3. Avvia partita
  * FIX v3.0: timeout 30s, retry esponenziale con jitter, riconnessione graceful,
  * validazione payload, indicatore qualità connessione, graceful server shutdown.
  */
@@ -16,6 +17,9 @@ let currentPing       = 0;
 let pingIv            = null;
 let reconnectAttempts = 0;
 let connectionQuality = 'good';
+let inRoomCharSelect  = false;
+let remotePlayerName  = null;
+let remotePlayerChar  = null;
 
 function initSocket() {
   if (typeof io === 'undefined') {
@@ -46,6 +50,7 @@ function initSocket() {
   socket.on('connect_error',     onSocketError);
   socket.on('playerJoined',      onPlayerJoined);
   socket.on('roomReady',         onRoomReady);
+  socket.on('playerCharSelected', onPlayerCharSelected);
   socket.on('playerMoved',       onPlayerMoved);
   socket.on('abilityUsed',       onAbilityUsed);
   socket.on('gameStateChanged',  onGameStateChanged);
@@ -99,9 +104,9 @@ function onReconnect(attempt) {
   reconnectAttempts = 0;
   mpSetStatus('Riconnesso al server', 'success');
   startPing();
-  if (currentRoomCode && mpCharSel) {
+  if (currentRoomCode && inRoomCharSelect) {
     const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
-    setTimeout(() => mpDoJoin(currentRoomCode, false, playerName, mpCharSel), 500);
+    setTimeout(() => mpRejoinRoom(currentRoomCode, playerName), 500);
   }
 }
 
@@ -115,16 +120,26 @@ function onServerShutdown(data) {
 
 function onPlayerJoined(data) {
   console.log('[MP] Giocatore entrato:', data.playerName);
+  remotePlayerName = data.playerName;
   mpSetStatus('Avversario trovato: ' + data.playerName, 'success');
+  updateMpRoomUI();
+}
+
+function onPlayerCharSelected(data) {
+  console.log('[MP] Avversario ha scelto:', data.character);
+  remotePlayerChar = data.character;
+  if (remotePlayerIndex !== null && data.playerIndex !== undefined) {
+    if (data.playerIndex === 0) sel1 = data.character;
+    else sel2 = data.character;
+  }
+  updateMpRoomUI();
+  checkBothPlayersReady();
 }
 
 function onRoomReady(data) {
   console.log('[MP] Stanza pronta:', data);
-  mpSetStatus('Stanza pronta! Seleziona il personaggio e premi INIZIA.', 'success');
-  const roomInfo = document.getElementById('mp-room-info');
-  if (roomInfo) roomInfo.classList.remove('hidden');
-  const startBtn = document.getElementById('mp-start-btn');
-  if (startBtn) startBtn.disabled = false;
+  mpSetStatus('Stanza pronta! Seleziona il personaggio.', 'success');
+  updateMpRoomUI();
 }
 
 function onPlayerMoved(data) {
@@ -180,7 +195,7 @@ function onGameEnded(data) {
 
 function onPlayerLeft(data) {
   console.log('[MP] Giocatore abbandonato:', data.playerName);
-  mpSetStatus("L'avversario ha abbandonato la partita", 'warn');
+  mpSetStatus('L\'avversario ha abbandonato la partita', 'warn');
   isMultiplayer = false;
   if (started) { showResult(localPlayerIndex === 0 ? sel1 : sel2); }
 }
@@ -195,6 +210,7 @@ function showMultiplayer() {
   document.getElementById('mp-room-info').classList.add('hidden');
   document.getElementById('mp-status').textContent = '';
   mpCharSel = null;
+  inRoomCharSelect = false;
   if (!socket || !socket.connected) initSocket();
   else mpSetStatus('Connesso al server', 'success');
 }
@@ -214,8 +230,7 @@ function mpCreateRoom() {
   }
   const code = Math.random().toString(36).substring(2, 6).toUpperCase();
   const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
-  if (!mpCharSel) { mpSetStatus('Seleziona prima un personaggio!', 'warn'); return; }
-  mpDoJoin(code, true, playerName, mpCharSel);
+  mpDoCreateRoom(code, playerName);
 }
 
 function mpJoinRoom() {
@@ -224,18 +239,17 @@ function mpJoinRoom() {
     if (!socket) initSocket();
     return;
   }
-  const codeEl = document.getElementById('mp-room-code');
+  const codeEl = document.getElementById('mp-room-input');
   const code   = codeEl ? codeEl.value.trim().toUpperCase() : '';
   if (!code || code.length < 4) { mpSetStatus('Inserisci un codice stanza valido (4 caratteri).', 'warn'); return; }
   const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
-  if (!mpCharSel) { mpSetStatus('Seleziona prima un personaggio!', 'warn'); return; }
-  mpDoJoin(code, false, playerName, mpCharSel);
+  mpDoJoinRoom(code, playerName);
 }
 
-function mpDoJoin(code, isCreator, playerName, character) {
+function mpDoCreateRoom(code, playerName) {
   if (!socket || !socket.connected) { mpSetStatus('Non connesso. Riprova tra qualche secondo.', 'error'); return; }
-  mpSetStatus('Connessione alla stanza ' + code + '...', 'info');
-  socket.emit('joinRoom', { roomCode: code, playerName: playerName, character: character }, (res) => {
+  mpSetStatus('Creazione stanza ' + code + '...', 'info');
+  socket.emit('createRoom', { roomCode: code, playerName: playerName }, (res) => {
     if (!res || !res.success) {
       mpSetStatus('Errore: ' + ((res && res.message) ? res.message : 'risposta non valida'), 'error');
       return;
@@ -244,23 +258,108 @@ function mpDoJoin(code, isCreator, playerName, character) {
     localPlayerIndex  = res.playerIndex;
     remotePlayerIndex = localPlayerIndex === 0 ? 1 : 0;
     isMultiplayer     = true;
-    if (localPlayerIndex === 0) sel1 = character;
-    else                        sel2 = character;
+    inRoomCharSelect  = true;
+    mpCharSel         = null;
+    remotePlayerName  = null;
+    remotePlayerChar  = null;
+    sel1 = null; sel2 = null;
     const codeDisplay = document.getElementById('mp-room-code-display');
     if (codeDisplay) codeDisplay.textContent = code;
     const roomInfo = document.getElementById('mp-room-info');
     if (roomInfo) roomInfo.classList.remove('hidden');
-    if (isCreator)
-      mpSetStatus('Stanza ' + code + ' creata! Condividi il codice.', 'success');
-    else
-      mpSetStatus('Entrato nella stanza ' + code + '. In attesa...', 'success');
-    console.log('[MP] Stanza:', code, '— Indice locale:', localPlayerIndex);
+    mpSetStatus('Stanza ' + code + ' creata! Condividi il codice con l\'avversario.', 'success');
+    updateMpRoomUI();
+    showMpCharSelect();
+    console.log('[MP] Stanza creata:', code, '— Indice locale:', localPlayerIndex);
   });
+}
+
+function mpDoJoinRoom(code, playerName) {
+  if (!socket || !socket.connected) { mpSetStatus('Non connesso. Riprova tra qualche secondo.', 'error'); return; }
+  mpSetStatus('Accesso alla stanza ' + code + '...', 'info');
+  socket.emit('joinRoom', { roomCode: code, playerName: playerName }, (res) => {
+    if (!res || !res.success) {
+      mpSetStatus('Errore: ' + ((res && res.message) ? res.message : 'risposta non valida'), 'error');
+      return;
+    }
+    currentRoomCode   = code;
+    localPlayerIndex  = res.playerIndex;
+    remotePlayerIndex = localPlayerIndex === 0 ? 1 : 0;
+    isMultiplayer     = true;
+    inRoomCharSelect  = true;
+    mpCharSel         = null;
+    remotePlayerName  = res.otherPlayerName || null;
+    remotePlayerChar  = null;
+    sel1 = null; sel2 = null;
+    const codeDisplay = document.getElementById('mp-room-code-display');
+    if (codeDisplay) codeDisplay.textContent = code;
+    const roomInfo = document.getElementById('mp-room-info');
+    if (roomInfo) roomInfo.classList.remove('hidden');
+    mpSetStatus('Entrato nella stanza ' + code + '. Seleziona il personaggio.', 'success');
+    updateMpRoomUI();
+    showMpCharSelect();
+    console.log('[MP] Stanza acceduta:', code, '— Indice locale:', localPlayerIndex);
+  });
+}
+
+function mpRejoinRoom(code, playerName) {
+  if (!socket || !socket.connected) return;
+  socket.emit('rejoinRoom', { roomCode: code, playerName: playerName }, (res) => {
+    if (res && res.success) {
+      mpSetStatus('Riaccesso alla stanza ' + code + '.', 'success');
+      updateMpRoomUI();
+    }
+  });
+}
+
+function showMpCharSelect() {
+  hideAll();
+  document.getElementById('screen-select').classList.remove('hidden');
+  sel1 = null; sel2 = null; selTurn = localPlayerIndex + 1;
+  buildGrid();
+  updateSelUI();
+  const lbl = document.getElementById('sel-lbl' + (localPlayerIndex + 1));
+  if (lbl) lbl.textContent = 'TU · Scegli il personaggio';
+  const lbl2 = document.getElementById('sel-lbl' + (remotePlayerIndex + 1));
+  if (lbl2) lbl2.textContent = (remotePlayerName || 'Avversario') + ' · In attesa...';
+}
+
+function mpSelectCharacter(charId) {
+  if (!inRoomCharSelect || !socket || !socket.connected) return;
+  mpCharSel = charId;
+  if (localPlayerIndex === 0) sel1 = charId;
+  else sel2 = charId;
+  updateSelUI();
+  socket.emit('selectCharacter', { character: charId });
+  checkBothPlayersReady();
+}
+
+function checkBothPlayersReady() {
+  if (!inRoomCharSelect || !mpCharSel || !remotePlayerChar) return;
+  const startBtn = document.getElementById('fight-btn');
+  if (startBtn) {
+    startBtn.disabled = false;
+    startBtn.textContent = '⚔ COMBATTI ONLINE!';
+  }
+}
+
+function updateMpRoomUI() {
+  const playersEl = document.getElementById('mp-room-players');
+  if (!playersEl) return;
+  if (remotePlayerName) {
+    playersEl.textContent = 'Tu vs ' + remotePlayerName;
+  } else {
+    playersEl.textContent = 'In attesa del secondo giocatore...';
+  }
 }
 
 function mpStartGame() {
   if (!socket || !socket.connected || !currentRoomCode) {
     mpSetStatus('Non connesso o stanza non valida.', 'error'); return;
+  }
+  if (!sel1 || !sel2) {
+    mpSetStatus('Entrambi i giocatori devono scegliere il personaggio.', 'warn');
+    return;
   }
   socket.emit('startGame');
 }
@@ -329,6 +428,7 @@ function disconnectMultiplayer() {
   if (socket) { socket.disconnect(); socket = null; }
   isMultiplayer = false; currentRoomCode = null;
   localPlayerIndex = null; remotePlayerIndex = null; reconnectAttempts = 0;
+  inRoomCharSelect = false; mpCharSel = null;
 }
 
-console.log('[MULTIPLAYER v3.0] Modulo caricato — Backend:', window.BACKEND_URL || '(non configurato)');
+console.log('[MULTIPLAYER v4.0] Modulo caricato — Nuovo flusso: Stanza -> Selezione -> Start');
