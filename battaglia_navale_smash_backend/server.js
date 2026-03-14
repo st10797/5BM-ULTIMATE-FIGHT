@@ -53,7 +53,12 @@ function isOriginAllowed(origin) {
 }
 
 const io = socketIo(server, {
-  cors: { origin: isOriginAllowed, methods: ['GET', 'POST'], credentials: true },
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
+  },
   transports: ['websocket', 'polling'],
   pingInterval: PING_INTERVAL,
   pingTimeout: PING_TIMEOUT,
@@ -62,10 +67,20 @@ const io = socketIo(server, {
     skipMiddlewares: false
   },
   allowEIO3: true,
+  path: '/socket.io/',
+  serveClient: false,
+  maxHttpBufferSize: 1e6,
 });
 
-app.use(cors({ origin: isOriginAllowed, credentials: true }));
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '../battaglia_navale_smash')));
 
 const rooms = new Map();
@@ -313,7 +328,7 @@ setInterval(() => {
 app.get('/api/health', (req, res) => {
   const uptime = process.uptime();
   const memUsage = process.memoryUsage();
-  res.json({
+  res.status(200).json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: Math.floor(uptime),
@@ -325,6 +340,14 @@ app.get('/api/health', (req, res) => {
     sessions: sessions.size,
     activeSockets: io.engine.clientsCount,
   });
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../battaglia_navale_smash/index.html'));
 });
 
 function gracefulShutdown() {
@@ -342,8 +365,20 @@ function gracefulShutdown() {
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
+process.on('uncaughtException', (err) => {
+  logError('UNCAUGHT_EXCEPTION', 'Errore non catturato', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logError('UNHANDLED_REJECTION', 'Promise rejection non gestita', reason);
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   logInfo('SERVER', `Backend v5.2 in ascolto su porta ${PORT}`);
   logInfo('SERVER', `Ambiente: ${NODE_ENV}`);
   logInfo('CONFIG', `Ping: ${PING_INTERVAL}ms, Timeout: ${PING_TIMEOUT}ms`);
+  logInfo('CONFIG', `CORS: * (permissivo)`);
+  logInfo('CONFIG', `Transports: websocket, polling`);
+  logInfo('CONFIG', `Socket.IO path: /socket.io/`);
 });

@@ -29,7 +29,15 @@ let matchSeed         = null;
 let matchStartAt      = null;
 let sessionToken      = null;
 
-const BACKEND_URL = window.BACKEND_URL || 'https://fivebm-ultimate-fight.onrender.com';
+// Determina l'URL del backend con protocollo corretto (WSS per HTTPS, WS per HTTP)
+function getBackendURL() {
+  if (window.BACKEND_URL) return window.BACKEND_URL;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.hostname;
+  const port = window.location.port ? ':' + window.location.port : '';
+  return protocol + '//' + host + port;
+}
+const BACKEND_URL = getBackendURL();
 
 // Backoff esponenziale con jitter
 function calculateBackoff(attempt) {
@@ -65,7 +73,7 @@ function initSocket() {
     randomizationFactor: 0.4,
     reconnectionAttempts: Infinity,
     timeout: 5000,
-    transports: ['websocket', 'polling'],
+    transports: ['websocket', 'polling'], // WebSocket preferito, polling fallback
     autoConnect: true,
     upgrade: true,
     rememberUpgrade: false,
@@ -73,7 +81,12 @@ function initSocket() {
     pingTimeout: 5000,
     allowEIO3: true,
     forceNew: false,
-    auth: { token: sessionToken }
+    secure: window.location.protocol === 'https:',
+    rejectUnauthorized: false,
+    auth: { token: sessionToken },
+    // Debug WebSocket
+    path: '/socket.io/',
+    query: {}
   });
   
   socket.on('connect',                onSocketConnect);
@@ -99,9 +112,10 @@ function initSocket() {
 
 function onSocketConnect() {
   reconnectAttempts = 0;
-  mpSetStatus('Connesso al server', 'success');
+  const transport = socket.io.engine.transport.name;
+  mpSetStatus('Connesso al server (transport: ' + transport + ')', 'success');
   startPing();
-  logMP('[CONNECT] Socket connesso:', socket.id);
+  logMP('[CONNECT] Socket connesso:', socket.id, 'Transport:', transport);
 }
 
 function onSocketDisconnect(reason) {
