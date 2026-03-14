@@ -608,6 +608,12 @@ function updPlayer(pi, dt) {
   // Integrazione posizione
   const prevY = pp.y;
   pp.x += pp.vx; pp.y += pp.vy;
+  
+  // Sincronizzazione multiplayer: invia posizione al server
+  if (typeof isMultiplayer !== 'undefined' && isMultiplayer && pi === localPlayerIndex) {
+    if (typeof sendPlayerMove === 'function') sendPlayerMove();
+  }
+
   const wasAir = !pp.onGround;
   pp.onGround = false;
 
@@ -766,6 +772,11 @@ function doAttack(pi) {
     pp.pCharge = Math.min(1, pp.pCharge + 1 / POWER_HITS);
     updPBar(pi);
     updPct(1 - pi);
+    
+    // Sincronizzazione multiplayer: notifica cambio stato se siamo l'attaccante
+    if (typeof isMultiplayer !== 'undefined' && isMultiplayer && pi === localPlayerIndex) {
+      if (typeof onPlayerStateChanged === 'function') onPlayerStateChanged(1 - pi);
+    }
     popDmg(op.x + op.w / 2, op.y, dmg, mv.ic || ch.col, ch.col);
     // Particelle limitate: max 8 per colpo normale
     spawnHitParticles(op.x + op.w / 2, op.y + op.h / 2, ch.col, 8);
@@ -830,6 +841,11 @@ function doWeaponAttack(pi) {
 function killPlayer(pi) {
   const pp = p[pi]; if (pp.isDead) return;
   pp.stocks--; buildLives(pi); pp.weapon = null; updWepHud(pi);
+  
+  // Sincronizzazione multiplayer: notifica KO
+  if (typeof isMultiplayer !== 'undefined' && isMultiplayer && pi === localPlayerIndex) {
+    if (typeof onPlayerStateChanged === 'function') onPlayerStateChanged(pi);
+  }
   // Esplosione arcobaleno di morte
   ['#ff0040', '#ff8800', '#ffd700', '#00ff88', '#00ccff', '#cc44ff'].forEach((col, i) =>
     setTimeout(() => addPfx({ type: 'shockwave', x: pp.x + pp.w / 2, y: pp.y + pp.h / 2, r: 0, maxR: 155 + i * 28, life: 0.52 + i * 0.04, col }), i * 45)
@@ -1550,6 +1566,8 @@ function drawPlayer(pi) {
   const pp = p[pi]; if (pp.isDead) return;
   // Riferimento al personaggio del giocatore (BUGFIX: ch era undefined causando crash del rendering)
   const ch = pp.ch;
+  if (!ch) return; // Sicurezza extra per evitare crash se ch non è ancora caricato
+  
   // Lampeggio di invincibilità dopo il respawn
   if (pp.invincT > 0 && Math.floor(pp.invincT * 9) % 2 === 0) return;
 

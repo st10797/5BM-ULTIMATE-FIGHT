@@ -42,6 +42,11 @@ function usePower(pi) {
   updPBar(pi);
   const ch = pp.ch;
 
+  // Sincronizzazione multiplayer: notifica l'uso dell'abilità
+  if (typeof isMultiplayer !== 'undefined' && isMultiplayer && pi === localPlayerIndex) {
+    if (typeof onPowerUsed === 'function') onPowerUsed(pi);
+  }
+
   switch (ch.powType) {
 
     /* ──────────────────────────────────────────────────────
