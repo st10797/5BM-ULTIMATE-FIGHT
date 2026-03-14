@@ -42,7 +42,13 @@
   const productionUrl = 'https://fivebm-ultimate-fight.onrender.com';
 
   // 4. Selezione finale dell'URL
-  window.BACKEND_URL = envUrl || (isLocalhost ? 'http://localhost:3000' : productionUrl);
+  // BUGFIX: Se siamo in un ambiente sandbox Manus, window.location.hostname potrebbe non essere localhost
+  // ma il backend è comunque sulla porta 3000 dello stesso host.
+  const sandboxUrl = window.location.protocol + '//' + window.location.hostname + ':3000';
+  window.BACKEND_URL = envUrl || (isLocalhost ? 'http://localhost:3000' : (window.location.port === '3000' ? '' : sandboxUrl));
+  
+  // Se siamo già sulla porta 3000, l'URL del backend è relativo
+  if (window.location.port === '3000') window.BACKEND_URL = window.location.origin;
 
   console.log('[CONFIG] Ambiente:', isLocalhost ? 'locale' : 'produzione');
   console.log('[CONFIG] Backend URL:', window.BACKEND_URL);

@@ -98,8 +98,9 @@ function showPreFight() {
   if (!sel1 || !sel2) return;
   // Se siamo in multiplayer online, avvia la partita sul server
   if (typeof isInMultiplayer === 'function' && isInMultiplayer()) {
-    if (socket && socket.connected) {
-      socket.emit('start_game');
+    if (typeof socket !== 'undefined' && socket && socket.connected) {
+      // Il server usa 'lobby:ready' per avviare il countdown
+      socket.emit('lobby:ready');
     }
     return;
   }
@@ -361,9 +362,22 @@ function startGame() {
   showGame();
   resizeCanvases();
 
-  p[0] = mkPlayer(sel1, 0.28, '#ff4466', { L: 'a', R: 'd', U: 'w', D: 's', atk: 'f', pwr: 'q', pick: 'e' });
-  // BUGFIX: tasti P2 allineati con il keydown handler (atk='l', pwr='/', pick='.')  
-  p[1] = mkPlayer(sel2, 0.72, '#44aaff', { L: 'arrowleft', R: 'arrowright', U: 'arrowup', D: 'arrowdown', atk: 'l', pwr: '/', pick: '.' });
+  // Inizializzazione giocatori (Multiplayer vs Locale)
+  if (typeof isMultiplayer !== 'undefined' && isMultiplayer) {
+    // In multiplayer, localPlayerIndex determina quale giocatore controlliamo
+    const p1Char = (typeof lobbyPlayers !== 'undefined' && lobbyPlayers[0]) ? lobbyPlayers[0].character : sel1;
+    const p2Char = (typeof lobbyPlayers !== 'undefined' && lobbyPlayers[1]) ? lobbyPlayers[1].character : sel2;
+    
+    p[0] = mkPlayer(p1Char || sel1, 0.28, '#ff4466', { L: 'a', R: 'd', U: 'w', D: 's', atk: 'f', pwr: 'q', pick: 'e' });
+    p[1] = mkPlayer(p2Char || sel2, 0.72, '#44aaff', { L: 'arrowleft', R: 'arrowright', U: 'arrowup', D: 'arrowdown', atk: 'l', pwr: '/', pick: '.' });
+    
+    // Disabilita input per il giocatore remoto
+    const remoteIdx = (typeof localPlayerIndex !== 'undefined') ? 1 - localPlayerIndex : 1;
+    p[remoteIdx].ctrl = { L: '', R: '', U: '', D: '', atk: '', pwr: '', pick: '' };
+  } else {
+    p[0] = mkPlayer(sel1, 0.28, '#ff4466', { L: 'a', R: 'd', U: 'w', D: 's', atk: 'f', pwr: 'q', pick: 'e' });
+    p[1] = mkPlayer(sel2, 0.72, '#44aaff', { L: 'arrowleft', R: 'arrowright', U: 'arrowup', D: 'arrowdown', atk: 'l', pwr: '/', pick: '.' });
+  }
 
   // Aggiorna HUD con nomi e colori
   document.getElementById('sh-nm1').textContent = CHARS[sel1].nome;

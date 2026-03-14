@@ -217,6 +217,11 @@ function onMatchInit(data) {
 
 function onMatchStart(data) {
   logMP('[MATCH_START]', data);
+  // Assicurati che i personaggi siano impostati correttamente prima di avviare
+  if (lobbyPlayers && lobbyPlayers.length >= 2) {
+    sel1 = lobbyPlayers[0].character;
+    sel2 = lobbyPlayers[1].character;
+  }
   startGame();
 }
 
