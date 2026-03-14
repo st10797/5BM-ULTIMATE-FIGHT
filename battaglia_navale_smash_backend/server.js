@@ -1,26 +1,18 @@
 /**
- * server.js — Battaglia Navale Smash Backend v4.0
- * Server Node.js con Express e Socket.io per il multiplayer.
+ * server.js — Battaglia Navale Smash Backend v5.0
+ * PvP Online Realistico: API REST + WebSocket, Stati Stanza, Timeout, Cleanup
  *
- * NUOVO FLUSSO v4.0:
- * 1. createRoom — Crea una stanza senza personaggio
- * 2. joinRoom — Accedi a una stanza esistente
- * 3. selectCharacter — Scegli il personaggio in-room
- * 4. startGame — Avvia la partita quando entrambi hanno scelto
+ * FLUSSO v5.0:
+ * 1. POST /rooms → crea stanza (state=WAITING_FOR_PLAYER)
+ * 2. WS /rooms/{code} → host subscribe immediata
+ * 3. POST /rooms/{code}/join → guest join, state=READY, broadcast PLAYER_JOINED
+ * 4. Transizione automatica → SelezionePersonaggi
+ * 5. Lock-in personaggi → MATCH_READY
+ * 6. Combattimento sincronizzato con client prediction
  *
- * RESTYLING TECNICO v3.0 — Correzioni e Ottimizzazioni:
- * [FIX-01] Timeout handshake aumentato a 30s con retry esponenziale
- * [FIX-02] Heartbeat aggressivo (pingInterval 8s, pingTimeout 25s)
- * [FIX-03] CORS whitelist esplicita + fallback sicuro
- * [FIX-04] Graceful shutdown (SIGTERM/SIGINT) per Render.com
- * [FIX-05] Rate limiting sugli eventi Socket.io (anti-flood)
- * [FIX-06] Riconnessione automatica con stato preservato
- * [FIX-07] Validazione robusta di tutti i payload in ingresso
- * [FIX-08] Logging strutturato con timestamp per debug produzione
- * [FIX-09] Cleanup stanze inattive ogni 5 minuti (era 10)
- * [FIX-10] Endpoint /api/health esteso con metriche dettagliate
- * [FIX-11] HTTP keep-alive per ridurre latenza TCP
- * [FIX-12] Compressione Socket.io perMessageDeflate
+ * STATI STANZA: CREATED → WAITING_FOR_PLAYER → READY → IN_SELECTION → IN_MATCH → CANCELLED|EXPIRED
+ * TIMEOUT: 120s se nessun join
+ * CLEANUP: stanze inattive ogni 5 minuti
  */
 'use strict';
 
@@ -33,8 +25,9 @@ const path     = require('path');
 const PORT             = parseInt(process.env.PORT, 10) || 3000;
 const NODE_ENV         = process.env.NODE_ENV || 'development';
 const FRONTEND_URL     = process.env.FRONTEND_URL || '';
-const ROOM_TIMEOUT_MS  = 30 * 60 * 1000;
-const CLEANUP_INTERVAL = 5  * 60 * 1000;
+const ROOM_TIMEOUT_MS  = 120 * 1000;
+const ROOM_INACTIVITY_MS = 30 * 60 * 1000;
+const CLEANUP_INTERVAL = 5 * 60 * 1000;
 const MAX_PLAYERS_ROOM = 2;
 const RATE_LIMIT_MS    = 16;
 const HANDSHAKE_TIMEOUT = 30000;
@@ -54,15 +47,12 @@ const logError = (tag, msg, extra) => log('ERROR', tag, msg, extra);
 const app    = express();
 const server = http.createServer(app);
 
-// [FIX-11] HTTP keep-alive
 server.keepAliveTimeout = 65000;
 server.headersTimeout   = 66000;
 
 const ALLOWED_ORIGINS = new Set([
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://127.0.0.1:3000',
-  'http://127.0.0.1:5173',
+  'http://localhost:3000', 'http://localhost:5173',
+  'http://127.0.0.1:3000', 'http://127.0.0.1:5173',
   ...(FRONTEND_URL ? [FRONTEND_URL] : []),
 ]);
 
@@ -72,7 +62,6 @@ function isOriginAllowed(origin) {
   if (origin.endsWith('.vercel.app')) return true;
   if (origin.endsWith('.onrender.com')) return true;
   if (NODE_ENV !== 'production') return true;
-  logWarn('CORS', `Origine non in whitelist (fallback): ${origin}`);
   return true;
 }
 
@@ -82,7 +71,7 @@ function corsOriginValidator(origin, callback) {
 
 const corsOptions = {
   origin: corsOriginValidator,
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
   maxAge: 86400,
@@ -94,7 +83,7 @@ const io = socketIo(server, {
   allowEIO3: true,
   connectTimeout: HANDSHAKE_TIMEOUT,
   pingInterval: PING_INTERVAL,
-  pingTimeout:  PING_TIMEOUT,
+  pingTimeout: PING_TIMEOUT,
   perMessageDeflate: { threshold: 512 },
   maxHttpBufferSize: 1e5,
   upgradeTimeout: 10000,
@@ -113,6 +102,13 @@ const rooms = new Map();
 const socketToRoom = new Map();
 const socketRateLimits = new Map();
 
+function generateRoomCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for (let i = 0; i < 4; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+  return code;
+}
+
 function validateString(val, maxLen = 256) {
   return typeof val === 'string' && val.length > 0 && val.length <= maxLen;
 }
@@ -121,59 +117,93 @@ function validateNumber(val) {
   return typeof val === 'number' && isFinite(val) && !isNaN(val);
 }
 
-function createRoom(roomCode) {
-  const room = {
-    code: roomCode,
-    players: {},
-    state: 'waiting',
-    gameState: { started: false, timer: 180, startedAt: null },
-    createdAt: Date.now(),
-    lastActivity: Date.now(),
-  };
-  rooms.set(roomCode, room);
-  logInfo('ROOM', `Stanza ${roomCode} creata`);
+class Room {
+  constructor(code, hostId) {
+    this.code = code;
+    this.state = 'CREATED';
+    this.hostId = hostId;
+    this.guestId = null;
+    this.players = {};
+    this.createdAt = new Date();
+    this.expiresAt = new Date(Date.now() + ROOM_TIMEOUT_MS);
+    this.lastActivity = Date.now();
+    this.timeoutHandle = null;
+    this.startTimeout();
+  }
+
+  startTimeout() {
+    if (this.timeoutHandle) clearTimeout(this.timeoutHandle);
+    this.timeoutHandle = setTimeout(() => {
+      if (this.state === 'WAITING_FOR_PLAYER') {
+        this.state = 'EXPIRED';
+        io.to(this.code).emit('ROOM_TIMEOUT', { code: this.code, ts: new Date().toISOString() });
+        logWarn('TIMEOUT', `Stanza ${this.code} scaduta (nessun join)`);
+        rooms.delete(this.code);
+      }
+    }, ROOM_TIMEOUT_MS);
+  }
+
+  cancelTimeout() {
+    if (this.timeoutHandle) {
+      clearTimeout(this.timeoutHandle);
+      this.timeoutHandle = null;
+    }
+  }
+
+  addPlayer(playerId, playerName) {
+    const index = Object.keys(this.players).length;
+    this.players[playerId] = {
+      id: playerId,
+      index,
+      name: playerName,
+      character: null,
+      ready: false,
+      x: 0, y: 0, vx: 0, vy: 0,
+      facing: true, onGround: false, crouching: false,
+      atkT: 0, atkAnim: '', damage: 0, stocks: 3, isDead: false,
+    };
+    if (index === 1) this.guestId = playerId;
+    this.lastActivity = Date.now();
+  }
+
+  removePlayer(playerId) {
+    delete this.players[playerId];
+    this.lastActivity = Date.now();
+  }
+
+  toJSON() {
+    return {
+      code: this.code,
+      state: this.state,
+      hostId: this.hostId,
+      guestId: this.guestId,
+      createdAt: this.createdAt.toISOString(),
+      expiresAt: this.expiresAt.toISOString(),
+      players: Object.values(this.players).map(p => ({
+        id: p.id, index: p.index, name: p.name, character: p.character, ready: p.ready,
+      })),
+    };
+  }
+}
+
+function createRoom(hostId, hostName) {
+  let code;
+  do { code = generateRoomCode(); } while (rooms.has(code));
+  const room = new Room(code, hostId);
+  room.addPlayer(hostId, hostName);
+  room.state = 'WAITING_FOR_PLAYER';
+  rooms.set(code, room);
+  logInfo('CREATE', `Stanza ${code} creata da ${hostId}`);
   return room;
 }
 
-function getRoom(roomCode) {
-  return rooms.get(roomCode);
+function getRoom(code) {
+  return rooms.get(code);
 }
 
-function touchRoom(roomCode) {
-  const room = getRoom(roomCode);
+function touchRoom(code) {
+  const room = getRoom(code);
   if (room) room.lastActivity = Date.now();
-}
-
-function addPlayerToRoom(roomCode, socketId, playerData) {
-  const room = getRoom(roomCode);
-  if (!room) return false;
-  const index = Object.keys(room.players).length;
-  room.players[socketId] = {
-    id: socketId,
-    index,
-    name: playerData.name || 'Giocatore',
-    character: playerData.character || null,
-    x: 0, y: 0, vx: 0, vy: 0,
-    facing: true, onGround: false, crouching: false,
-    atkT: 0, atkAnim: '', damage: 0, stocks: 3, isDead: false,
-  };
-  socketToRoom.set(socketId, roomCode);
-  touchRoom(roomCode);
-  return true;
-}
-
-function removePlayerFromRoom(roomCode, socketId) {
-  const room = getRoom(roomCode);
-  if (!room) return;
-  delete room.players[socketId];
-  socketToRoom.delete(socketId);
-  if (Object.keys(room.players).length === 0) {
-    rooms.delete(roomCode);
-    logInfo('ROOM', `Stanza ${roomCode} eliminata (vuota)`);
-  } else {
-    touchRoom(roomCode);
-    io.to(roomCode).emit('playerLeft', { playerId: socketId, playerName: 'Sconosciuto' });
-  }
 }
 
 function isRateLimited(socketId) {
@@ -184,103 +214,144 @@ function isRateLimited(socketId) {
   return false;
 }
 
-// Cleanup stanze inattive
-setInterval(() => {
-  const now = Date.now();
-  for (const [code, room] of rooms.entries()) {
-    if (now - room.lastActivity > ROOM_TIMEOUT_MS) {
-      rooms.delete(code);
-      logWarn('CLEANUP', `Stanza ${code} eliminata (timeout)`);
-    }
+// ============================================================
+// API REST ENDPOINTS
+// ============================================================
+
+app.post('/rooms', (req, res) => {
+  const { hostId, hostName } = req.body || {};
+  if (!validateString(hostId, 64) || !validateString(hostName, 32)) {
+    return res.status(400).json({ success: false, message: 'hostId e hostName obbligatori' });
   }
-}, CLEANUP_INTERVAL);
+  const room = createRoom(hostId, hostName);
+  res.status(201).json({
+    success: true,
+    code: room.code,
+    room: room.toJSON(),
+  });
+});
+
+app.post('/rooms/:code/join', (req, res) => {
+  const { code } = req.params;
+  const { guestId, guestName } = req.body || {};
+  if (!validateString(code, 8) || !validateString(guestId, 64) || !validateString(guestName, 32)) {
+    return res.status(400).json({ success: false, message: 'Parametri non validi' });
+  }
+  const room = getRoom(code);
+  if (!room) return res.status(404).json({ success: false, message: 'Stanza non trovata' });
+  if (room.state !== 'WAITING_FOR_PLAYER') {
+    return res.status(409).json({ success: false, message: 'Stanza non disponibile' });
+  }
+  if (Object.keys(room.players).length >= MAX_PLAYERS_ROOM) {
+    return res.status(409).json({ success: false, message: 'Stanza piena' });
+  }
+  room.addPlayer(guestId, guestName);
+  room.state = 'READY';
+  room.cancelTimeout();
+  touchRoom(code);
+  io.to(code).emit('PLAYER_JOINED', {
+    type: 'PLAYER_JOINED',
+    roomCode: code,
+    payload: { playerId: guestId, playerName: guestName },
+    ts: new Date().toISOString(),
+  });
+  logInfo('JOIN', `Giocatore ${guestId} ha acceduto stanza ${code}`);
+  res.status(200).json({
+    success: true,
+    code: room.code,
+    room: room.toJSON(),
+  });
+});
+
+app.delete('/rooms/:code', (req, res) => {
+  const { code } = req.params;
+  const { hostId } = req.body || {};
+  if (!validateString(code, 8) || !validateString(hostId, 64)) {
+    return res.status(400).json({ success: false, message: 'Parametri non validi' });
+  }
+  const room = getRoom(code);
+  if (!room) return res.status(404).json({ success: false, message: 'Stanza non trovata' });
+  if (room.hostId !== hostId) {
+    return res.status(403).json({ success: false, message: 'Non sei l\'host' });
+  }
+  room.state = 'CANCELLED';
+  room.cancelTimeout();
+  io.to(code).emit('ROOM_CANCELLED', {
+    type: 'ROOM_CANCELLED',
+    roomCode: code,
+    ts: new Date().toISOString(),
+  });
+  rooms.delete(code);
+  logInfo('CANCEL', `Stanza ${code} cancellata da host ${hostId}`);
+  res.status(200).json({ success: true, message: 'Stanza cancellata' });
+});
+
+app.get('/rooms/:code', (req, res) => {
+  const { code } = req.params;
+  const room = getRoom(code);
+  if (!room) return res.status(404).json({ success: false, message: 'Stanza non trovata' });
+  res.status(200).json({ success: true, room: room.toJSON() });
+});
+
+// ============================================================
+// WEBSOCKET HANDLERS
+// ============================================================
 
 io.on('connection', (socket) => {
   logInfo('CONNECT', `Socket ${socket.id} connesso da ${socket.handshake.address}`);
 
-  socket.on('createRoom', (data, callback) => {
-    if (typeof callback !== 'function') { logWarn('CREATE', `Callback mancante da ${socket.id}`); return; }
-    const { roomCode, playerName } = data || {};
-    if (!validateString(roomCode, 8) || !validateString(playerName, 32)) {
-      return callback({ success: false, message: 'Dati mancanti o non validi' });
-    }
-    const prevRoom = socketToRoom.get(socket.id);
-    if (prevRoom && prevRoom !== roomCode) { removePlayerFromRoom(prevRoom, socket.id); socket.leave(prevRoom); }
-    let room = getRoom(roomCode);
-    if (!room) room = createRoom(roomCode);
-    if (Object.keys(room.players).length >= MAX_PLAYERS_ROOM)
-      return callback({ success: false, message: 'Stanza piena (massimo 2 giocatori)' });
-    if (!addPlayerToRoom(roomCode, socket.id, { name: playerName, character: null }))
-      return callback({ success: false, message: 'Errore aggiunta giocatore' });
-    socket.join(roomCode);
-    const playerIndex = room.players[socket.id].index;
-    callback({ success: true, playerIndex, roomCode, players: Object.values(room.players) });
-    logInfo('CREATE', `Giocatore ${socket.id} ha creato stanza ${roomCode}`);
-  });
-
-  socket.on('joinRoom', (data, callback) => {
-    if (typeof callback !== 'function') { logWarn('JOIN', `Callback mancante da ${socket.id}`); return; }
-    const { roomCode, playerName } = data || {};
-    if (!validateString(roomCode, 8) || !validateString(playerName, 32)) {
-      return callback({ success: false, message: 'Dati mancanti o non validi' });
-    }
-    const prevRoom = socketToRoom.get(socket.id);
-    if (prevRoom && prevRoom !== roomCode) { removePlayerFromRoom(prevRoom, socket.id); socket.leave(prevRoom); }
-    let room = getRoom(roomCode);
-    if (!room) return callback({ success: false, message: 'Stanza non trovata' });
-    if (Object.keys(room.players).length >= MAX_PLAYERS_ROOM)
-      return callback({ success: false, message: 'Stanza piena (massimo 2 giocatori)' });
-    if (socketToRoom.get(socket.id) === roomCode)
-      return callback({ success: false, message: 'Sei già in questa stanza' });
-    if (!addPlayerToRoom(roomCode, socket.id, { name: playerName, character: null }))
-      return callback({ success: false, message: 'Errore aggiunta giocatore' });
-    socket.join(roomCode);
-    const playerIndex = room.players[socket.id].index;
-    const otherPlayerName = Object.values(room.players).find(p => p.id !== socket.id)?.name || null;
-    callback({ success: true, playerIndex, roomCode, otherPlayerName, players: Object.values(room.players) });
-    socket.to(roomCode).emit('playerJoined', {
-      playerId: socket.id, playerName, playerIndex,
-      players: Object.values(room.players),
-    });
-    logInfo('JOIN', `Giocatore ${socket.id} ha acceduto stanza ${roomCode}`);
-  });
-
-  socket.on('rejoinRoom', (data, callback) => {
+  socket.on('subscribe_room', (data, callback) => {
     if (typeof callback !== 'function') return;
-    const { roomCode, playerName } = data || {};
-    const room = getRoom(roomCode);
-    if (!room || !room.players[socket.id]) {
-      return callback({ success: false, message: 'Stanza non trovata' });
+    const { code } = data || {};
+    if (!validateString(code, 8)) {
+      return callback({ success: false, message: 'Codice stanza non valido' });
     }
-    room.players[socket.id].name = playerName;
-    socket.join(roomCode);
-    touchRoom(roomCode);
-    callback({ success: true, playerIndex: room.players[socket.id].index });
-    logInfo('REJOIN', `Giocatore ${socket.id} ha rientrato stanza ${roomCode}`);
+    const room = getRoom(code);
+    if (!room) return callback({ success: false, message: 'Stanza non trovata' });
+    socket.join(code);
+    socketToRoom.set(socket.id, code);
+    touchRoom(code);
+    callback({ success: true, room: room.toJSON() });
+    logInfo('SUB', `Socket ${socket.id} sottoscritto a stanza ${code}`);
   });
 
-  socket.on('selectCharacter', (data) => {
-    const roomCode = socketToRoom.get(socket.id);
-    if (!roomCode) return;
-    const room = getRoom(roomCode);
+  socket.on('select_character', (data) => {
+    const code = socketToRoom.get(socket.id);
+    if (!code) return;
+    const room = getRoom(code);
     if (!room || !room.players[socket.id]) return;
     const { character } = data || {};
     if (!validateString(character, 32)) return;
     room.players[socket.id].character = character;
-    touchRoom(roomCode);
-    socket.to(roomCode).emit('playerCharSelected', {
+    room.players[socket.id].ready = true;
+    touchRoom(code);
+    socket.to(code).emit('PLAYER_CHAR_SELECTED', {
+      type: 'PLAYER_CHAR_SELECTED',
       playerId: socket.id,
       playerIndex: room.players[socket.id].index,
       character,
+      ts: new Date().toISOString(),
     });
-    logInfo('CHAR', `Giocatore ${socket.id} ha scelto ${character} in stanza ${roomCode}`);
+    const allReady = Object.values(room.players).every(p => p.ready && p.character);
+    if (allReady && room.state === 'READY') {
+      room.state = 'IN_SELECTION';
+      io.to(code).emit('MATCH_READY', {
+        type: 'MATCH_READY',
+        roomCode: code,
+        players: Object.values(room.players).map(p => ({
+          id: p.id, index: p.index, name: p.name, character: p.character,
+        })),
+        ts: new Date().toISOString(),
+      });
+      logInfo('READY', `Partita pronta in stanza ${code}`);
+    }
   });
 
-  socket.on('playerMove', (data) => {
+  socket.on('player_move', (data) => {
     if (isRateLimited(socket.id)) return;
-    const roomCode = socketToRoom.get(socket.id);
-    if (!roomCode) return;
-    const room = getRoom(roomCode);
+    const code = socketToRoom.get(socket.id);
+    if (!code) return;
+    const room = getRoom(code);
     if (!room || !room.players[socket.id]) return;
     const { x, y, vx, vy, facing, onGround, crouching, atkT, atkAnim, damage, stocks, isDead } = data || {};
     if (!validateNumber(x) || !validateNumber(y)) return;
@@ -290,105 +361,107 @@ io.on('connection', (socket) => {
       y: Math.max(-1.0, Math.min(2.0, y)),
       vx: validateNumber(vx) ? vx : pp.vx,
       vy: validateNumber(vy) ? vy : pp.vy,
-      facing:    facing    !== undefined ? !!facing    : pp.facing,
-      onGround:  onGround  !== undefined ? !!onGround  : pp.onGround,
+      facing: facing !== undefined ? !!facing : pp.facing,
+      onGround: onGround !== undefined ? !!onGround : pp.onGround,
       crouching: crouching !== undefined ? !!crouching : pp.crouching,
-      atkT:      validateNumber(atkT)    ? atkT        : pp.atkT,
-      atkAnim:   validateString(atkAnim, 16) ? atkAnim : pp.atkAnim,
-      damage:    validateNumber(damage)  ? Math.max(0, damage) : pp.damage,
-      stocks:    validateNumber(stocks)  ? Math.max(0, Math.min(10, stocks)) : pp.stocks,
-      isDead:    isDead !== undefined    ? !!isDead    : pp.isDead,
+      atkT: validateNumber(atkT) ? atkT : pp.atkT,
+      atkAnim: validateString(atkAnim, 16) ? atkAnim : pp.atkAnim,
+      damage: validateNumber(damage) ? Math.max(0, damage) : pp.damage,
+      stocks: validateNumber(stocks) ? Math.max(0, Math.min(10, stocks)) : pp.stocks,
+      isDead: isDead !== undefined ? !!isDead : pp.isDead,
     });
-    touchRoom(roomCode);
-    socket.to(roomCode).emit('playerMoved', {
-      playerId: socket.id, playerIndex: pp.index, ...data,
+    touchRoom(code);
+    socket.to(code).emit('PLAYER_MOVED', {
+      type: 'PLAYER_MOVED',
+      playerId: socket.id,
+      playerIndex: pp.index,
+      data: { x: pp.x, y: pp.y, vx: pp.vx, vy: pp.vy, facing: pp.facing, onGround: pp.onGround, crouching: pp.crouching, atkT: pp.atkT, atkAnim: pp.atkAnim, damage: pp.damage, stocks: pp.stocks, isDead: pp.isDead },
+      ts: new Date().toISOString(),
     });
   });
 
-  socket.on('useAbility', (data) => {
-    const roomCode = socketToRoom.get(socket.id);
-    if (!roomCode) return;
-    const room = getRoom(roomCode);
+  socket.on('use_ability', (data) => {
+    const code = socketToRoom.get(socket.id);
+    if (!code) return;
+    const room = getRoom(code);
     if (!room || !room.players[socket.id]) return;
-    touchRoom(roomCode);
-    socket.to(roomCode).emit('abilityUsed', {
-      playerId: socket.id, playerIndex: room.players[socket.id].index,
-      abilityType: data?.abilityType || '', targetIndex: data?.targetIndex,
+    touchRoom(code);
+    socket.to(code).emit('ABILITY_USED', {
+      type: 'ABILITY_USED',
+      playerId: socket.id,
+      playerIndex: room.players[socket.id].index,
+      abilityType: data?.abilityType || '',
+      ts: new Date().toISOString(),
     });
   });
 
-  socket.on('gameStateUpdate', (data) => {
-    if (isRateLimited(socket.id)) return;
-    const roomCode = socketToRoom.get(socket.id);
-    if (!roomCode) return;
-    const room = getRoom(roomCode);
-    if (!room || !room.players[socket.id]) return;
-    const pp = room.players[socket.id];
-    const safe = {};
-    if (validateNumber(data?.damage)) safe.damage = Math.max(0, data.damage);
-    if (validateNumber(data?.stocks)) safe.stocks = Math.max(0, Math.min(10, data.stocks));
-    if (data?.isDead !== undefined)   safe.isDead = !!data.isDead;
-    if (validateNumber(data?.x))      safe.x = data.x;
-    if (validateNumber(data?.y))      safe.y = data.y;
-    Object.assign(pp, safe);
-    touchRoom(roomCode);
-    io.to(roomCode).emit('gameStateChanged', {
-      playerId: socket.id, playerIndex: pp.index, data: safe,
-    });
-  });
-
-  socket.on('startGame', () => {
-    const roomCode = socketToRoom.get(socket.id);
-    if (!roomCode) return;
-    const room = getRoom(roomCode);
+  socket.on('start_game', () => {
+    const code = socketToRoom.get(socket.id);
+    if (!code) return;
+    const room = getRoom(code);
     if (!room) return;
     if (Object.keys(room.players).length < MAX_PLAYERS_ROOM) {
-      socket.emit('error', { message: 'Attendere il secondo giocatore' }); return;
+      socket.emit('ERROR', { message: 'Attendere il secondo giocatore' }); return;
     }
-    const allReady = Object.values(room.players).every(p => p.character);
-    if (!allReady) {
-      socket.emit('error', { message: 'Entrambi i giocatori devono scegliere il personaggio' }); return;
-    }
-    room.state = 'playing';
-    room.gameState.started = true;
-    room.gameState.timer = 180;
-    room.gameState.startedAt = Date.now();
-    touchRoom(roomCode);
-    io.to(roomCode).emit('gameStarted', { players: Object.values(room.players), timer: 180 });
-    logInfo('GAME', `Partita iniziata in stanza ${roomCode}`);
+    room.state = 'IN_MATCH';
+    touchRoom(code);
+    io.to(code).emit('GAME_STARTED', {
+      type: 'GAME_STARTED',
+      roomCode: code,
+      players: Object.values(room.players).map(p => ({
+        id: p.id, index: p.index, name: p.name, character: p.character,
+      })),
+      ts: new Date().toISOString(),
+    });
+    logInfo('START', `Partita iniziata in stanza ${code}`);
   });
 
-  socket.on('endGame', (data) => {
-    const roomCode = socketToRoom.get(socket.id);
-    if (!roomCode) return;
-    const room = getRoom(roomCode);
+  socket.on('end_game', (data) => {
+    const code = socketToRoom.get(socket.id);
+    if (!code) return;
+    const room = getRoom(code);
     if (!room) return;
-    room.state = 'finished'; touchRoom(roomCode);
-    io.to(roomCode).emit('gameEnded', {
-      winnerId: data?.winnerId, reason: data?.reason || 'normal',
-      players: Object.values(room.players),
+    room.state = 'FINISHED';
+    touchRoom(code);
+    io.to(code).emit('GAME_ENDED', {
+      type: 'GAME_ENDED',
+      roomCode: code,
+      winnerId: data?.winnerId,
+      reason: data?.reason || 'normal',
+      ts: new Date().toISOString(),
     });
-    logInfo('GAME', `Partita terminata in stanza ${roomCode}`);
+    logInfo('END', `Partita terminata in stanza ${code}`);
   });
 
   socket.on('ping', (callback) => {
-    if (typeof callback === 'function')
+    if (typeof callback === 'function') {
       callback({ pong: true, timestamp: Date.now(), serverTime: new Date().toISOString() });
+    }
   });
 
   socket.on('disconnect', (reason) => {
-    const roomCode = socketToRoom.get(socket.id);
-    if (roomCode) {
-      const room = getRoom(roomCode);
+    const code = socketToRoom.get(socket.id);
+    if (code) {
+      const room = getRoom(code);
       if (room) {
         const playerName = room.players[socket.id]?.name || 'Sconosciuto';
-        removePlayerFromRoom(roomCode, socket.id);
-        if (room.state === 'playing') {
-          io.to(roomCode).emit('playerLeft', { playerId: socket.id, playerName });
-          logWarn('GAME', `Giocatore ${socket.id} disconnesso durante partita in stanza ${roomCode}`);
+        room.removePlayer(socket.id);
+        if (Object.keys(room.players).length === 0) {
+          room.cancelTimeout();
+          rooms.delete(code);
+          logInfo('CLEANUP', `Stanza ${code} eliminata (vuota)`);
+        } else {
+          io.to(code).emit('PLAYER_LEFT', {
+            type: 'PLAYER_LEFT',
+            playerId: socket.id,
+            playerName,
+            ts: new Date().toISOString(),
+          });
+          logWarn('DISCONNECT', `Giocatore ${socket.id} disconnesso da stanza ${code}`);
         }
       }
     }
+    socketToRoom.delete(socket.id);
     socketRateLimits.delete(socket.id);
     logInfo('DISCONNECT', `Socket ${socket.id} disconnesso (${reason})`);
   });
@@ -397,6 +470,25 @@ io.on('connection', (socket) => {
     logError('SOCKET_ERROR', `Errore socket ${socket.id}`, err);
   });
 });
+
+// ============================================================
+// CLEANUP PERIODICO
+// ============================================================
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, room] of rooms.entries()) {
+    if (now - room.lastActivity > ROOM_INACTIVITY_MS) {
+      room.cancelTimeout();
+      rooms.delete(code);
+      logWarn('CLEANUP', `Stanza ${code} eliminata (inattiva)`);
+    }
+  }
+}, CLEANUP_INTERVAL);
+
+// ============================================================
+// HEALTH CHECK
+// ============================================================
 
 app.get('/api/health', (req, res) => {
   const uptime = process.uptime();
@@ -408,7 +500,6 @@ app.get('/api/health', (req, res) => {
     memory: {
       heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
       heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
-      external: Math.round(memUsage.external / 1024 / 1024),
     },
     rooms: rooms.size,
     activeSockets: io.engine.clientsCount,
@@ -416,18 +507,17 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/rooms', (req, res) => {
-  const roomList = Array.from(rooms.values()).map(r => ({
-    code: r.code,
-    players: Object.keys(r.players).length,
-    state: r.state,
-    createdAt: new Date(r.createdAt).toISOString(),
-  }));
+  const roomList = Array.from(rooms.values()).map(r => r.toJSON());
   res.json({ rooms: roomList, total: roomList.length });
 });
 
+// ============================================================
+// GRACEFUL SHUTDOWN
+// ============================================================
+
 function gracefulShutdown() {
   logInfo('SHUTDOWN', 'Graceful shutdown in corso...');
-  io.emit('serverShutdown', { message: 'Server in manutenzione. Riconnessione automatica in 30s.' });
+  io.emit('SERVER_SHUTDOWN', { message: 'Server in manutenzione. Riconnessione automatica in 30s.' });
   setTimeout(() => {
     io.close();
     server.close(() => {
@@ -441,6 +531,6 @@ process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
 server.listen(PORT, '0.0.0.0', () => {
-  logInfo('SERVER', `Battaglia Navale Smash Backend v4.0 in ascolto su porta ${PORT}`);
+  logInfo('SERVER', `Battaglia Navale Smash Backend v5.0 in ascolto su porta ${PORT}`);
   logInfo('SERVER', `Ambiente: ${NODE_ENV}`);
 });

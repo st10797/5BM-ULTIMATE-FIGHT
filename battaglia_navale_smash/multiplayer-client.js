@@ -1,8 +1,14 @@
 /**
- * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v4.0
- * NUOVO FLUSSO: 1. Crea/Accedi stanza -> 2. Selezione personaggi in-room -> 3. Avvia partita
- * FIX v3.0: timeout 30s, retry esponenziale con jitter, riconnessione graceful,
- * validazione payload, indicatore qualità connessione, graceful server shutdown.
+ * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v5.0
+ * PvP Online Realistico: API REST + WebSocket, Transizioni Automatiche, QR Code
+ *
+ * FLUSSO v5.0:
+ * 1. POST /rooms → crea stanza, mostra UI Waiting con QR + Countdown
+ * 2. WS subscribe_room → host sottoscritto
+ * 3. Guest POST /rooms/{code}/join → PLAYER_JOINED event
+ * 4. Transizione automatica → SelezionePersonaggi
+ * 5. select_character → PLAYER_CHAR_SELECTED + MATCH_READY
+ * 6. start_game → GAME_STARTED
  */
 
 let socket            = null;
@@ -10,26 +16,27 @@ let isMultiplayer     = false;
 let currentRoomCode   = null;
 let localPlayerIndex  = null;
 let remotePlayerIndex = null;
-let mpCharSel         = null;
+let isHost            = false;
+let localPlayerId     = null;
 let lastUpdateTime    = 0;
 const UPDATE_INTERVAL = 33;
 let currentPing       = 0;
 let pingIv            = null;
 let reconnectAttempts = 0;
 let connectionQuality = 'good';
-let inRoomCharSelect  = false;
-let remotePlayerName  = null;
-let remotePlayerChar  = null;
+let roomCountdown     = 120;
+let countdownInterval = null;
+
+const BACKEND_URL = window.BACKEND_URL || 'https://fivebm-ultimate-fight.onrender.com';
 
 function initSocket() {
   if (typeof io === 'undefined') {
     mpSetStatus('Socket.io non disponibile. Ricarica la pagina.', 'error');
     return false;
   }
-  const serverUrl = window.BACKEND_URL || 'https://fivebm-ultimate-fight.onrender.com';
   mpSetStatus('Connessione al server in corso...', 'info');
   if (socket) { socket.removeAllListeners(); socket.disconnect(); socket = null; }
-  socket = io(serverUrl, {
+  socket = io(BACKEND_URL, {
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 8000,
@@ -45,23 +52,24 @@ function initSocket() {
     allowEIO3: true,
     forceNew: false,
   });
-  socket.on('connect',           onSocketConnect);
-  socket.on('disconnect',        onSocketDisconnect);
-  socket.on('connect_error',     onSocketError);
-  socket.on('playerJoined',      onPlayerJoined);
-  socket.on('roomReady',         onRoomReady);
-  socket.on('playerCharSelected', onPlayerCharSelected);
-  socket.on('playerMoved',       onPlayerMoved);
-  socket.on('abilityUsed',       onAbilityUsed);
-  socket.on('gameStateChanged',  onGameStateChanged);
-  socket.on('gameStarted',       onGameStarted);
-  socket.on('gameEnded',         onGameEnded);
-  socket.on('playerLeft',        onPlayerLeft);
-  socket.on('error',             onServerError);
-  socket.on('reconnect_attempt', onReconnectAttempt);
-  socket.on('reconnect',         onReconnect);
-  socket.on('reconnect_failed',  onReconnectFailed);
-  socket.on('serverShutdown',    onServerShutdown);
+  socket.on('connect',                onSocketConnect);
+  socket.on('disconnect',             onSocketDisconnect);
+  socket.on('connect_error',          onSocketError);
+  socket.on('PLAYER_JOINED',          onPlayerJoined);
+  socket.on('PLAYER_CHAR_SELECTED',   onPlayerCharSelected);
+  socket.on('MATCH_READY',            onMatchReady);
+  socket.on('GAME_STARTED',           onGameStarted);
+  socket.on('GAME_ENDED',             onGameEnded);
+  socket.on('PLAYER_MOVED',           onPlayerMoved);
+  socket.on('ABILITY_USED',           onAbilityUsed);
+  socket.on('PLAYER_LEFT',            onPlayerLeft);
+  socket.on('ROOM_TIMEOUT',           onRoomTimeout);
+  socket.on('ROOM_CANCELLED',         onRoomCancelled);
+  socket.on('ERROR',                  onServerError);
+  socket.on('reconnect_attempt',      onReconnectAttempt);
+  socket.on('reconnect',              onReconnect);
+  socket.on('reconnect_failed',       onReconnectFailed);
+  socket.on('SERVER_SHUTDOWN',        onServerShutdown);
   return true;
 }
 
@@ -69,7 +77,7 @@ function onSocketConnect() {
   reconnectAttempts = 0;
   mpSetStatus('Connesso al server', 'success');
   startPing();
-  console.log('[MP] Connesso — socket:', socket.id);
+  logMP('[CONNECT] Socket connesso:', socket.id);
 }
 
 function onSocketDisconnect(reason) {
@@ -78,7 +86,7 @@ function onSocketDisconnect(reason) {
     ? 'Disconnesso dal server (riconnessione automatica...)'
     : 'Connessione persa: ' + reason;
   mpSetStatus(msg, 'warn');
-  console.warn('[MP] Disconnesso:', reason);
+  logMP('[DISCONNECT]', reason);
   if (reason === 'io server disconnect') {
     setTimeout(() => { if (socket) socket.connect(); }, 2000);
   }
@@ -92,7 +100,7 @@ function onSocketError(err) {
   else if (msg.includes('refused') || msg.includes('ECONNREFUSED'))
     displayMsg = 'Server non raggiungibile. Verifica la connessione internet.';
   mpSetStatus(displayMsg, 'error');
-  console.error('[MP] Errore connessione:', err);
+  logMP('[ERROR]', msg);
 }
 
 function onReconnectAttempt(attempt) {
@@ -104,9 +112,12 @@ function onReconnect(attempt) {
   reconnectAttempts = 0;
   mpSetStatus('Riconnesso al server', 'success');
   startPing();
-  if (currentRoomCode && inRoomCharSelect) {
-    const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
-    setTimeout(() => mpRejoinRoom(currentRoomCode, playerName), 500);
+  if (currentRoomCode && socket) {
+    socket.emit('subscribe_room', { code: currentRoomCode }, (res) => {
+      if (res && res.success) {
+        logMP('[REJOIN] Riaccesso a stanza:', currentRoomCode);
+      }
+    });
   }
 }
 
@@ -119,33 +130,45 @@ function onServerShutdown(data) {
 }
 
 function onPlayerJoined(data) {
-  console.log('[MP] Giocatore entrato:', data.playerName);
-  remotePlayerName = data.playerName;
-  mpSetStatus('Avversario trovato: ' + data.playerName, 'success');
-  updateMpRoomUI();
+  logMP('[PLAYER_JOINED]', data);
+  mpSetStatus('Avversario trovato!', 'success');
+  stopCountdown();
+  setTimeout(() => showMpCharSelect(), 500);
 }
 
 function onPlayerCharSelected(data) {
-  console.log('[MP] Avversario ha scelto:', data.character);
-  remotePlayerChar = data.character;
-  if (remotePlayerIndex !== null && data.playerIndex !== undefined) {
+  logMP('[PLAYER_CHAR_SELECTED]', data);
+  if (data.playerIndex === remotePlayerIndex) {
     if (data.playerIndex === 0) sel1 = data.character;
     else sel2 = data.character;
+    updateSelUI();
   }
-  updateMpRoomUI();
-  checkBothPlayersReady();
 }
 
-function onRoomReady(data) {
-  console.log('[MP] Stanza pronta:', data);
-  mpSetStatus('Stanza pronta! Seleziona il personaggio.', 'success');
-  updateMpRoomUI();
+function onMatchReady(data) {
+  logMP('[MATCH_READY]', data);
+  mpSetStatus('Entrambi pronti! Inizia il combattimento...', 'success');
+  setTimeout(() => startGame(), 1000);
+}
+
+function onGameStarted(data) {
+  logMP('[GAME_STARTED]', data);
+  if (!sel1 || !sel2) { sel1 = sel1 || 'Brutus'; sel2 = sel2 || 'Tornari'; }
+  startGame();
+}
+
+function onGameEnded(data) {
+  logMP('[GAME_ENDED]', data);
+  const winnerIndex = data.winnerId ? (data.winnerId === localPlayerId ? localPlayerIndex : remotePlayerIndex) : -1;
+  if (winnerIndex >= 0) {
+    showResult(winnerIndex === 0 ? sel1 : sel2);
+  }
 }
 
 function onPlayerMoved(data) {
   if (!p || !p[remotePlayerIndex]) return;
   const pp = p[remotePlayerIndex];
-  const d  = (data && data.data) ? data.data : data;
+  const d  = data.data || data;
   if (!d) return;
   if (typeof d.x   === 'number' && isFinite(d.x))  pp.x  = d.x;
   if (typeof d.y   === 'number' && isFinite(d.y))  pp.y  = d.y;
@@ -167,50 +190,37 @@ function onAbilityUsed(data) {
   }
 }
 
-function onGameStateChanged(data) {
-  if (data.playerIndex === remotePlayerIndex && p[remotePlayerIndex]) {
-    const pp = p[remotePlayerIndex];
-    const d  = data.data;
-    if (d && typeof d.damage === 'number') { pp.damage = d.damage; updPct(remotePlayerIndex); }
-    if (d && typeof d.stocks === 'number') { pp.stocks = d.stocks; buildLives(remotePlayerIndex); }
-    if (d && d.isDead !== undefined) pp.isDead = !!d.isDead;
-  }
-}
-
-function onGameStarted(data) {
-  console.log('[MP] Partita iniziata');
-  if (!sel1 || !sel2) { sel1 = sel1 || 'Brutus'; sel2 = sel2 || 'Tornari'; }
-  startGame();
-}
-
-function onGameEnded(data) {
-  console.log('[MP] Partita terminata');
-  const winnerIndex = data.players
-    ? data.players.findIndex(pl => pl.id === data.winnerId)
-    : -1;
-  if (winnerIndex >= 0 && data.players[winnerIndex]) {
-    showResult(data.players[winnerIndex].character || (winnerIndex === 0 ? sel1 : sel2));
-  }
-}
-
 function onPlayerLeft(data) {
-  console.log('[MP] Giocatore abbandonato:', data.playerName);
+  logMP('[PLAYER_LEFT]', data);
   mpSetStatus('L\'avversario ha abbandonato la partita', 'warn');
   isMultiplayer = false;
   if (started) { showResult(localPlayerIndex === 0 ? sel1 : sel2); }
+}
+
+function onRoomTimeout(data) {
+  logMP('[ROOM_TIMEOUT]', data);
+  mpSetStatus('Stanza scaduta: nessun giocatore ha fatto il join.', 'warn');
+  setTimeout(() => showTitle(), 2000);
+}
+
+function onRoomCancelled(data) {
+  logMP('[ROOM_CANCELLED]', data);
+  mpSetStatus('Stanza cancellata dall\'host.', 'warn');
+  setTimeout(() => showTitle(), 2000);
 }
 
 function onServerError(data) {
   mpSetStatus('Errore server: ' + ((data && data.message) ? data.message : 'sconosciuto'), 'error');
 }
 
+function logMP(tag, msg) {
+  console.log('[MP]', tag, msg);
+}
+
 function showMultiplayer() {
   hideAll();
   document.getElementById('screen-multiplayer').classList.remove('hidden');
-  document.getElementById('mp-room-info').classList.add('hidden');
   document.getElementById('mp-status').textContent = '';
-  mpCharSel = null;
-  inRoomCharSelect = false;
   if (!socket || !socket.connected) initSocket();
   else mpSetStatus('Connesso al server', 'success');
 }
@@ -222,18 +232,45 @@ function mpSetStatus(msg, type = 'info') {
   el.className = 'mp-status mp-status-' + type;
 }
 
-function mpCreateRoom() {
+async function mpCreateRoom() {
   if (!socket || !socket.connected) {
     mpSetStatus('Non connesso al server. Attendi...', 'error');
     if (!socket) initSocket();
     return;
   }
-  const code = Math.random().toString(36).substring(2, 6).toUpperCase();
   const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
-  mpDoCreateRoom(code, playerName);
+  localPlayerId = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  mpSetStatus('Creazione stanza...', 'info');
+  try {
+    const res = await fetch(BACKEND_URL + '/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostId: localPlayerId, hostName: playerName }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      mpSetStatus('Errore: ' + (data.message || 'risposta non valida'), 'error');
+      return;
+    }
+    currentRoomCode = data.code;
+    localPlayerIndex = 0;
+    remotePlayerIndex = 1;
+    isHost = true;
+    isMultiplayer = true;
+    socket.emit('subscribe_room', { code: currentRoomCode }, (res) => {
+      if (res && res.success) {
+        logMP('[CREATE] Stanza creata:', currentRoomCode);
+        showMpWaitingRoom();
+        startCountdown();
+      }
+    });
+  } catch (err) {
+    mpSetStatus('Errore rete: ' + err.message, 'error');
+    logMP('[ERROR]', err);
+  }
 }
 
-function mpJoinRoom() {
+async function mpJoinRoom() {
   if (!socket || !socket.connected) {
     mpSetStatus('Non connesso al server. Attendi...', 'error');
     if (!socket) initSocket();
@@ -243,73 +280,99 @@ function mpJoinRoom() {
   const code   = codeEl ? codeEl.value.trim().toUpperCase() : '';
   if (!code || code.length < 4) { mpSetStatus('Inserisci un codice stanza valido (4 caratteri).', 'warn'); return; }
   const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
-  mpDoJoinRoom(code, playerName);
-}
-
-function mpDoCreateRoom(code, playerName) {
-  if (!socket || !socket.connected) { mpSetStatus('Non connesso. Riprova tra qualche secondo.', 'error'); return; }
-  mpSetStatus('Creazione stanza ' + code + '...', 'info');
-  socket.emit('createRoom', { roomCode: code, playerName: playerName }, (res) => {
-    if (!res || !res.success) {
-      mpSetStatus('Errore: ' + ((res && res.message) ? res.message : 'risposta non valida'), 'error');
-      return;
-    }
-    currentRoomCode   = code;
-    localPlayerIndex  = res.playerIndex;
-    remotePlayerIndex = localPlayerIndex === 0 ? 1 : 0;
-    isMultiplayer     = true;
-    inRoomCharSelect  = true;
-    mpCharSel         = null;
-    remotePlayerName  = null;
-    remotePlayerChar  = null;
-    sel1 = null; sel2 = null;
-    const codeDisplay = document.getElementById('mp-room-code-display');
-    if (codeDisplay) codeDisplay.textContent = code;
-    const roomInfo = document.getElementById('mp-room-info');
-    if (roomInfo) roomInfo.classList.remove('hidden');
-    mpSetStatus('Stanza ' + code + ' creata! Condividi il codice con l\'avversario.', 'success');
-    updateMpRoomUI();
-    showMpCharSelect();
-    console.log('[MP] Stanza creata:', code, '— Indice locale:', localPlayerIndex);
-  });
-}
-
-function mpDoJoinRoom(code, playerName) {
-  if (!socket || !socket.connected) { mpSetStatus('Non connesso. Riprova tra qualche secondo.', 'error'); return; }
+  localPlayerId = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
   mpSetStatus('Accesso alla stanza ' + code + '...', 'info');
-  socket.emit('joinRoom', { roomCode: code, playerName: playerName }, (res) => {
-    if (!res || !res.success) {
-      mpSetStatus('Errore: ' + ((res && res.message) ? res.message : 'risposta non valida'), 'error');
+  try {
+    const res = await fetch(BACKEND_URL + '/rooms/' + code + '/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ guestId: localPlayerId, guestName: playerName }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      mpSetStatus('Errore: ' + (data.message || 'risposta non valida'), 'error');
       return;
     }
-    currentRoomCode   = code;
-    localPlayerIndex  = res.playerIndex;
-    remotePlayerIndex = localPlayerIndex === 0 ? 1 : 0;
-    isMultiplayer     = true;
-    inRoomCharSelect  = true;
-    mpCharSel         = null;
-    remotePlayerName  = res.otherPlayerName || null;
-    remotePlayerChar  = null;
-    sel1 = null; sel2 = null;
-    const codeDisplay = document.getElementById('mp-room-code-display');
-    if (codeDisplay) codeDisplay.textContent = code;
-    const roomInfo = document.getElementById('mp-room-info');
-    if (roomInfo) roomInfo.classList.remove('hidden');
-    mpSetStatus('Entrato nella stanza ' + code + '. Seleziona il personaggio.', 'success');
-    updateMpRoomUI();
-    showMpCharSelect();
-    console.log('[MP] Stanza acceduta:', code, '— Indice locale:', localPlayerIndex);
+    currentRoomCode = code;
+    localPlayerIndex = 1;
+    remotePlayerIndex = 0;
+    isHost = false;
+    isMultiplayer = true;
+    socket.emit('subscribe_room', { code: currentRoomCode }, (res) => {
+      if (res && res.success) {
+        logMP('[JOIN] Accesso a stanza:', currentRoomCode);
+        mpSetStatus('Entrato nella stanza! Scegli il personaggio.', 'success');
+        showMpCharSelect();
+      }
+    });
+  } catch (err) {
+    mpSetStatus('Errore rete: ' + err.message, 'error');
+    logMP('[ERROR]', err);
+  }
+}
+
+function showMpWaitingRoom() {
+  hideAll();
+  const waitingEl = document.createElement('div');
+  waitingEl.id = 'mp-waiting-room';
+  waitingEl.className = 'screen';
+  waitingEl.innerHTML = `
+    <div class="mp-waiting-container">
+      <div class="mp-waiting-title">In attesa dell'avversario...</div>
+      <div class="mp-room-code-display" id="mp-code-display">${currentRoomCode}</div>
+      <button class="mp-action-btn" onclick="mpCopyCode()">📋 Copia Codice</button>
+      <div class="mp-qr-placeholder" id="mp-qr">QR Code</div>
+      <div class="mp-countdown" id="mp-countdown">Scade tra: 120s</div>
+      <button class="res-btn" onclick="mpCancelRoom()">Annulla</button>
+    </div>
+  `;
+  document.body.appendChild(waitingEl);
+}
+
+function mpCopyCode() {
+  if (!currentRoomCode) return;
+  navigator.clipboard.writeText(currentRoomCode).then(() => {
+    mpSetStatus('Codice copiato negli appunti!', 'success');
+  }).catch(() => {
+    mpSetStatus('Errore copia codice', 'error');
   });
 }
 
-function mpRejoinRoom(code, playerName) {
-  if (!socket || !socket.connected) return;
-  socket.emit('rejoinRoom', { roomCode: code, playerName: playerName }, (res) => {
-    if (res && res.success) {
-      mpSetStatus('Riaccesso alla stanza ' + code + '.', 'success');
-      updateMpRoomUI();
+async function mpCancelRoom() {
+  if (!currentRoomCode || !isHost) return;
+  try {
+    await fetch(BACKEND_URL + '/rooms/' + currentRoomCode, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostId: localPlayerId }),
+    });
+    mpSetStatus('Stanza cancellata', 'info');
+    setTimeout(() => showTitle(), 1000);
+  } catch (err) {
+    mpSetStatus('Errore cancellazione stanza', 'error');
+  }
+}
+
+function startCountdown() {
+  roomCountdown = 120;
+  if (countdownInterval) clearInterval(countdownInterval);
+  countdownInterval = setInterval(() => {
+    roomCountdown--;
+    const el = document.getElementById('mp-countdown');
+    if (el) el.textContent = 'Scade tra: ' + roomCountdown + 's';
+    if (roomCountdown <= 0) {
+      stopCountdown();
+      mpSetStatus('Stanza scaduta', 'warn');
+      setTimeout(() => showTitle(), 2000);
     }
-  });
+  }, 1000);
+}
+
+function stopCountdown() {
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
 }
 
 function showMpCharSelect() {
@@ -321,47 +384,15 @@ function showMpCharSelect() {
   const lbl = document.getElementById('sel-lbl' + (localPlayerIndex + 1));
   if (lbl) lbl.textContent = 'TU · Scegli il personaggio';
   const lbl2 = document.getElementById('sel-lbl' + (remotePlayerIndex + 1));
-  if (lbl2) lbl2.textContent = (remotePlayerName || 'Avversario') + ' · In attesa...';
+  if (lbl2) lbl2.textContent = 'Avversario · In attesa...';
 }
 
 function mpSelectCharacter(charId) {
-  if (!inRoomCharSelect || !socket || !socket.connected) return;
-  mpCharSel = charId;
+  if (!socket || !socket.connected) return;
   if (localPlayerIndex === 0) sel1 = charId;
   else sel2 = charId;
   updateSelUI();
-  socket.emit('selectCharacter', { character: charId });
-  checkBothPlayersReady();
-}
-
-function checkBothPlayersReady() {
-  if (!inRoomCharSelect || !mpCharSel || !remotePlayerChar) return;
-  const startBtn = document.getElementById('fight-btn');
-  if (startBtn) {
-    startBtn.disabled = false;
-    startBtn.textContent = '⚔ COMBATTI ONLINE!';
-  }
-}
-
-function updateMpRoomUI() {
-  const playersEl = document.getElementById('mp-room-players');
-  if (!playersEl) return;
-  if (remotePlayerName) {
-    playersEl.textContent = 'Tu vs ' + remotePlayerName;
-  } else {
-    playersEl.textContent = 'In attesa del secondo giocatore...';
-  }
-}
-
-function mpStartGame() {
-  if (!socket || !socket.connected || !currentRoomCode) {
-    mpSetStatus('Non connesso o stanza non valida.', 'error'); return;
-  }
-  if (!sel1 || !sel2) {
-    mpSetStatus('Entrambi i giocatori devono scegliere il personaggio.', 'warn');
-    return;
-  }
-  socket.emit('startGame');
+  socket.emit('select_character', { character: charId });
 }
 
 function sendPlayerMove() {
@@ -371,7 +402,7 @@ function sendPlayerMove() {
   if (now - lastUpdateTime < UPDATE_INTERVAL) return;
   lastUpdateTime = now;
   const pp = p[localPlayerIndex];
-  socket.emit('playerMove', {
+  socket.emit('player_move', {
     x: pp.x, y: pp.y, vx: pp.vx, vy: pp.vy,
     facing: pp.facing, onGround: pp.onGround, crouching: pp.crouching,
     atkT: pp.atkT, atkAnim: pp.atkAnim,
@@ -382,14 +413,7 @@ function sendPlayerMove() {
 function onPowerUsed(pi) {
   if (!isMultiplayer || pi !== localPlayerIndex) return;
   if (!socket || !socket.connected) return;
-  socket.emit('useAbility', { abilityType: p[pi].ch.powType, targetIndex: remotePlayerIndex });
-}
-
-function onPlayerStateChanged(pi) {
-  if (!isMultiplayer || pi !== localPlayerIndex) return;
-  if (!socket || !socket.connected) return;
-  const pp = p[pi];
-  socket.emit('gameStateUpdate', { damage: pp.damage, stocks: pp.stocks, isDead: pp.isDead, x: pp.x, y: pp.y });
+  socket.emit('use_ability', { abilityType: p[pi].ch.powType });
 }
 
 function updateMultiplayer() {
@@ -425,10 +449,11 @@ function getConnectionQuality(){ return connectionQuality; }
 
 function disconnectMultiplayer() {
   stopPing();
+  stopCountdown();
   if (socket) { socket.disconnect(); socket = null; }
   isMultiplayer = false; currentRoomCode = null;
   localPlayerIndex = null; remotePlayerIndex = null; reconnectAttempts = 0;
-  inRoomCharSelect = false; mpCharSel = null;
+  isHost = false; localPlayerId = null;
 }
 
-console.log('[MULTIPLAYER v4.0] Modulo caricato — Nuovo flusso: Stanza -> Selezione -> Start');
+console.log('[MULTIPLAYER v5.0] Modulo caricato — PvP Online Realistico');

@@ -97,8 +97,10 @@ function showSelect() {
 function showPreFight() {
   if (!sel1 || !sel2) return;
   // Se siamo in multiplayer online, avvia la partita sul server
-  if (isInMultiplayer && isInMultiplayer()) {
-    mpStartGame();
+  if (typeof isInMultiplayer === 'function' && isInMultiplayer()) {
+    if (socket && socket.connected) {
+      socket.emit('start_game');
+    }
     return;
   }
   hideAll();
@@ -204,7 +206,7 @@ function buildGrid() {
  */
 function pickChar(id, card) {
   // Se siamo in multiplayer online, usa la funzione dedicata
-  if (isInMultiplayer && isInMultiplayer()) {
+  if (typeof isInMultiplayer === 'function' && isInMultiplayer()) {
     mpSelectCharacter(id);
     return;
   }
