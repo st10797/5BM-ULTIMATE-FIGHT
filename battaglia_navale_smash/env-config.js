@@ -44,12 +44,30 @@
   // 4. Selezione finale dell'URL
   // BUGFIX: Se siamo in un ambiente sandbox Manus, window.location.hostname potrebbe non essere localhost
   // ma il backend è comunque sulla porta 3000 dello stesso host.
-  const sandboxUrl = window.location.protocol + '//' + window.location.hostname + ':3000';
-  window.BACKEND_URL = envUrl || (isLocalhost ? 'http://localhost:3000' : (window.location.port === '3000' ? '' : sandboxUrl));
+  let finalUrl = null;
   
-  // Se siamo già sulla porta 3000, l'URL del backend è relativo
-  if (window.location.port === '3000') window.BACKEND_URL = window.location.origin;
+  // Priorità 1: Variabile d'ambiente Vercel
+  if (envUrl) {
+    finalUrl = envUrl;
+  }
+  // Priorità 2: Se siamo già sulla porta 3000, il backend è lo stesso origin
+  else if (window.location.port === '3000') {
+    finalUrl = window.location.origin;
+  }
+  // Priorità 3: Se siamo in localhost, usa localhost:3000
+  else if (isLocalhost) {
+    finalUrl = 'http://localhost:3000';
+  }
+  // Priorità 4: Ambiente sandbox o remoto - costruisci URL dinamicamente
+  else {
+    finalUrl = window.location.protocol + '//' + window.location.hostname + ':3000';
+  }
+  
+  window.BACKEND_URL = finalUrl;
 
   console.log('[CONFIG] Ambiente:', isLocalhost ? 'locale' : 'produzione');
   console.log('[CONFIG] Backend URL:', window.BACKEND_URL);
+  console.log('[CONFIG] Hostname:', window.location.hostname);
+  console.log('[CONFIG] Port:', window.location.port);
+  console.log('[CONFIG] Origin:', window.location.origin);
 })();

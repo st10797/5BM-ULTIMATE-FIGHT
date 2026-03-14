@@ -31,13 +31,27 @@ let sessionToken      = null;
 
 // Determina l'URL del backend con protocollo corretto (WSS per HTTPS, WS per HTTP)
 function getBackendURL() {
-  if (window.BACKEND_URL) return window.BACKEND_URL;
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = window.location.hostname;
-  const port = window.location.port ? ':' + window.location.port : '';
-  return protocol + '//' + host + port;
+  let url = window.BACKEND_URL;
+  
+  if (!url) {
+    // Fallback: costruisci URL dinamicamente
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname;
+    const port = window.location.port ? ':' + window.location.port : '';
+    url = protocol + '//' + host + port;
+  }
+  
+  // Converti HTTP/HTTPS in WS/WSS se necessario
+  if (url.startsWith('http://')) {
+    url = url.replace('http://', 'ws://');
+  } else if (url.startsWith('https://')) {
+    url = url.replace('https://', 'wss://');
+  }
+  
+  console.log('[SOCKET] Backend URL:', url);
+  return url;
 }
-const BACKEND_URL = getBackendURL();
+let BACKEND_URL = getBackendURL();
 
 // Backoff esponenziale con jitter
 function calculateBackoff(attempt) {
@@ -72,13 +86,13 @@ function initSocket() {
     reconnectionDelayMax: 30000,
     randomizationFactor: 0.4,
     reconnectionAttempts: Infinity,
-    timeout: 5000,
+    timeout: 8000,
     transports: ['websocket', 'polling'], // WebSocket preferito, polling fallback
     autoConnect: true,
     upgrade: true,
     rememberUpgrade: false,
-    pingInterval: 10000,
-    pingTimeout: 5000,
+    pingInterval: 15000,
+    pingTimeout: 8000,
     allowEIO3: true,
     forceNew: false,
     secure: window.location.protocol === 'https:',
@@ -86,18 +100,24 @@ function initSocket() {
     auth: { token: sessionToken },
     // Debug WebSocket
     path: '/socket.io/',
-    query: {}
+    query: {},
+    // Abilita il logging in debug mode
+    reconnectionDelayMax: 30000,
+    // Gestione errori di connessione
+    ioVersion: 4
   });
   
   socket.on('connect',                onSocketConnect);
   socket.on('disconnect',             onSocketDisconnect);
   socket.on('connect_error',          onSocketError);
+  socket.on('error',                  onSocketError);
   socket.on('room:created',           onRoomCreated);
   socket.on('room:joined',            onRoomJoined);
   socket.on('resume:room',            onResumeRoom);
   socket.on('lobby:update',           onLobbyUpdate);
   socket.on('match:init',             onMatchInit);
   socket.on('match:start',            onMatchStart);
+  socket.on('reconnect_attempt',      onReconnectAttempt);
   socket.on('snapshot',               onSnapshot);
   socket.on('player:left',            onPlayerLeft);
   socket.on('room:cancelled',         onRoomCancelled);
@@ -107,6 +127,7 @@ function initSocket() {
   socket.on('reconnect_failed',       onReconnectFailed);
   socket.on('server:shutdown',        onServerShutdown);
   
+  console.log('[SOCKET] Socket.io inizializzato correttamente');
   return true;
 }
 
