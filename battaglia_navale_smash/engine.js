@@ -372,8 +372,10 @@ function startGame() {
     p[1] = mkPlayer(p2Char || sel2, 0.72, '#44aaff', { L: 'arrowleft', R: 'arrowright', U: 'arrowup', D: 'arrowdown', atk: 'l', pwr: '/', pick: '.' });
     
     // Disabilita input per il giocatore remoto
-    const remoteIdx = (typeof localPlayerIndex !== 'undefined') ? 1 - localPlayerIndex : 1;
-    p[remoteIdx].ctrl = { L: '', R: '', U: '', D: '', atk: '', pwr: '', pick: '' };
+    const remoteIdx = (typeof remotePlayerIndex !== 'undefined') ? remotePlayerIndex : (1 - localPlayerIndex);
+    if (p[remoteIdx]) {
+      p[remoteIdx].ctrl = { L: '', R: '', U: '', D: '', atk: '', pwr: '', pick: '' };
+    }
   } else {
     p[0] = mkPlayer(sel1, 0.28, '#ff4466', { L: 'a', R: 'd', U: 'w', D: 's', atk: 'f', pwr: 'q', pick: 'e' });
     p[1] = mkPlayer(sel2, 0.72, '#44aaff', { L: 'arrowleft', R: 'arrowright', U: 'arrowup', D: 'arrowdown', atk: 'l', pwr: '/', pick: '.' });
@@ -2254,23 +2256,23 @@ document.addEventListener('keydown', e => {
   if (!started || paused) return;
 
   // Salto P1
-  if (k === 'w' && p[0] && !p[0].isDead && !p[0].crouching) {
+  if (k === 'w' && p[0] && !p[0].isDead && !p[0].crouching && p[0].ctrl.U) {
     if (p[0].onGround) { p[0].vy = -p[0].ch.jump * 1.35; p[0].onGround = false; p[0].jumpCount = 1; spawnJumpParticles(p[0]); }
     else if (p[0].jumpCount === 1 && p[0].vy > -p[0].ch.jump * 0.4) { p[0].vy = -p[0].ch.jump * 1.1; p[0].jumpCount = 2; spawnJumpParticles(p[0]); }
   }
   // Salto P2
-  if (k === 'arrowup' && p[1] && !p[1].isDead && !p[1].crouching) {
+  if (k === 'arrowup' && p[1] && !p[1].isDead && !p[1].crouching && p[1].ctrl.U) {
     if (p[1].onGround) { p[1].vy = -p[1].ch.jump * 1.35; p[1].onGround = false; p[1].jumpCount = 1; spawnJumpParticles(p[1]); }
     else if (p[1].jumpCount === 1 && p[1].vy > -p[1].ch.jump * 0.4) { p[1].vy = -p[1].ch.jump * 1.1; p[1].jumpCount = 2; spawnJumpParticles(p[1]); }
   }
   // Attacco P1
-  if (k === 'f' && p[0] && !p[0].isDead && p[0].aCool <= 0) { doAttack(0); p[0].aCool = 0.28; }
+  if (k === 'f' && p[0] && !p[0].isDead && p[0].aCool <= 0 && p[0].ctrl.atk) { doAttack(0); p[0].aCool = 0.28; }
   // Attacco P2
-  if (k === 'l' && p[1] && !p[1].isDead && p[1].aCool <= 0) { doAttack(1); p[1].aCool = 0.28; }
+  if (k === 'l' && p[1] && !p[1].isDead && p[1].aCool <= 0 && p[1].ctrl.atk) { doAttack(1); p[1].aCool = 0.28; }
   // Potere P1
-  if (k === 'q' && p[0]) usePower(0);
+  if (k === 'q' && p[0] && p[0].ctrl.pwr) usePower(0);
   // Potere P2
-  if (k === '/' && p[1]) usePower(1);
+  if (k === '/' && p[1] && p[1].ctrl.pwr) usePower(1);
 });
 
 document.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });

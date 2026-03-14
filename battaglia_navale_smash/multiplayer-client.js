@@ -230,14 +230,31 @@ function onSnapshot(data) {
   currentTick = data.tick;
   const snapshot = data.snapshot;
   snapshot.forEach(pData => {
+    // Usa l'ID del giocatore per trovare l'indice corretto
     const pi = pData.id === localPlayerId ? localPlayerIndex : remotePlayerIndex;
     if (p[pi]) {
       const pp = p[pi];
+      // Aggiorna sempre il giocatore remoto
       if (pi === remotePlayerIndex) {
         pp.x = pData.x; pp.y = pData.y; pp.vx = pData.vx; pp.vy = pData.vy;
         pp.facing = pData.f; pp.onGround = pData.g; pp.crouching = pData.c;
         pp.atkT = pData.at; pp.atkAnim = pData.aa; pp.damage = pData.d;
         pp.stocks = pData.s; pp.isDead = pData.dead;
+        
+        // Aggiorna HUD per il giocatore remoto
+        if (typeof updPct === 'function') updPct(pi);
+        if (typeof buildLives === 'function') buildLives(pi);
+        if (typeof updPBar === 'function') updPBar(pi);
+      } else {
+        // Per il giocatore locale, sincronizza solo stocks e damage se c'è discrepanza enorme
+        if (Math.abs(pp.damage - pData.d) > 10) {
+          pp.damage = pData.d;
+          if (typeof updPct === 'function') updPct(pi);
+        }
+        if (pp.stocks !== pData.s) {
+          pp.stocks = pData.s;
+          if (typeof buildLives === 'function') buildLives(pi);
+        }
       }
     }
   });
