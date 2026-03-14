@@ -1,12 +1,12 @@
 /**
- * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v5.1
- * PvP Online Realistico: Server-Authoritative, Tick Loop 60Hz, Lobby/Ready
+ * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v5.2
+ * PvP Online Realistico: Session Recovery, Auto-reconnect con Backoff/Jitter
  *
- * FLUSSO v5.1:
- * 1. room:create -> CREATED -> LOBBY (host)
- * 2. room:join -> LOBBY (guest) -> lobby:update (entrambi)
- * 3. lobby:ready -> allReady? -> COUNTDOWN -> match:init {seed, startAt}
- * 4. startAt -> IN_MATCH -> Tick Loop 60Hz -> snapshot 20Hz
+ * RESILIENZA v5.2:
+ * - Session token persistente (localStorage)
+ * - Auto-reconnect con backoff esponenziale + jitter
+ * - Resume automatico stanza post-disconnessione
+ * - Transports fallback: ['websocket', 'polling']
  */
 
 let socket            = null;
@@ -18,7 +18,7 @@ let localPlayerId     = null;
 let isHost            = false;
 let currentTick       = 0;
 let lastUpdateTime    = 0;
-const UPDATE_INTERVAL = 16; // ~60Hz
+const UPDATE_INTERVAL = 16;
 let currentPing       = 0;
 let pingIv            = null;
 let reconnectAttempts = 0;
@@ -27,37 +27,61 @@ let inLobby           = false;
 let lobbyPlayers      = [];
 let matchSeed         = null;
 let matchStartAt      = null;
+let sessionToken      = null;
 
 const BACKEND_URL = window.BACKEND_URL || 'https://fivebm-ultimate-fight.onrender.com';
+
+// Backoff esponenziale con jitter
+function calculateBackoff(attempt) {
+  const base = Math.min(30000, 1000 * Math.pow(2, attempt));
+  const jitter = Math.floor(Math.random() * 500);
+  return base + jitter;
+}
+
+function initSessionToken() {
+  sessionToken = localStorage.getItem('sessionToken');
+  if (!sessionToken) {
+    sessionToken = 'token_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    localStorage.setItem('sessionToken', sessionToken);
+  }
+  return sessionToken;
+}
 
 function initSocket() {
   if (typeof io === 'undefined') {
     mpSetStatus('Socket.io non disponibile. Ricarica la pagina.', 'error');
     return false;
   }
+  
+  initSessionToken();
   mpSetStatus('Connessione al server in corso...', 'info');
+  
   if (socket) { socket.removeAllListeners(); socket.disconnect(); socket = null; }
+  
   socket = io(BACKEND_URL, {
     reconnection: true,
     reconnectionDelay: 1000,
-    reconnectionDelayMax: 8000,
+    reconnectionDelayMax: 30000,
     randomizationFactor: 0.4,
-    reconnectionAttempts: 20,
-    timeout: 30000,
+    reconnectionAttempts: Infinity,
+    timeout: 5000,
     transports: ['websocket', 'polling'],
     autoConnect: true,
     upgrade: true,
     rememberUpgrade: false,
-    pingInterval: 8000,
-    pingTimeout: 25000,
+    pingInterval: 10000,
+    pingTimeout: 5000,
     allowEIO3: true,
     forceNew: false,
+    auth: { token: sessionToken }
   });
+  
   socket.on('connect',                onSocketConnect);
   socket.on('disconnect',             onSocketDisconnect);
   socket.on('connect_error',          onSocketError);
   socket.on('room:created',           onRoomCreated);
   socket.on('room:joined',            onRoomJoined);
+  socket.on('resume:room',            onResumeRoom);
   socket.on('lobby:update',           onLobbyUpdate);
   socket.on('match:init',             onMatchInit);
   socket.on('match:start',            onMatchStart);
@@ -68,6 +92,8 @@ function initSocket() {
   socket.on('reconnect_attempt',      onReconnectAttempt);
   socket.on('reconnect',              onReconnect);
   socket.on('reconnect_failed',       onReconnectFailed);
+  socket.on('server:shutdown',        onServerShutdown);
+  
   return true;
 }
 
@@ -85,8 +111,10 @@ function onSocketDisconnect(reason) {
     : 'Connessione persa: ' + reason;
   mpSetStatus(msg, 'warn');
   logMP('[DISCONNECT]', reason);
-  if (reason === 'io server disconnect') {
-    setTimeout(() => { if (socket) socket.connect(); }, 2000);
+  
+  // Se in match, mostra overlay "Riconnessione..."
+  if (started && isMultiplayer) {
+    showReconnectingOverlay();
   }
 }
 
@@ -103,25 +131,32 @@ function onSocketError(err) {
 
 function onReconnectAttempt(attempt) {
   reconnectAttempts = attempt;
-  mpSetStatus('Tentativo di riconnessione ' + attempt + '/20...', 'warn');
+  const delay = calculateBackoff(attempt);
+  mpSetStatus('Tentativo riconnessione ' + attempt + ' in ' + Math.round(delay / 1000) + 's...', 'warn');
+  logMP('[RECONNECT_ATTEMPT]', 'Tentativo ' + attempt + ', delay: ' + delay + 'ms');
 }
 
 function onReconnect(attempt) {
   reconnectAttempts = 0;
   mpSetStatus('Riconnesso al server', 'success');
   startPing();
-  if (currentRoomCode && socket) {
-    socket.emit('room:join', { code: currentRoomCode, playerId: localPlayerId, name: document.getElementById('mp-name')?.value?.trim() || 'Giocatore' });
-  }
+  logMP('[RECONNECT]', 'Riconnesso dopo ' + attempt + ' tentativi');
 }
 
 function onReconnectFailed() {
   mpSetStatus('Impossibile riconnettersi. Ricarica la pagina.', 'error');
+  logMP('[RECONNECT_FAILED]', 'Riconnessione fallita');
+}
+
+function onServerShutdown(data) {
+  mpSetStatus((data && data.message) ? data.message : 'Server in riavvio...', 'warn');
 }
 
 function onRoomCreated(data) {
   logMP('[ROOM_CREATED]', data);
   currentRoomCode = data.code;
+  sessionToken = data.token || sessionToken;
+  localStorage.setItem('sessionToken', sessionToken);
   isHost = true;
   isMultiplayer = true;
   localPlayerIndex = 0;
@@ -132,11 +167,23 @@ function onRoomCreated(data) {
 function onRoomJoined(data) {
   logMP('[ROOM_JOINED]', data);
   currentRoomCode = data.code;
+  sessionToken = data.token || sessionToken;
+  localStorage.setItem('sessionToken', sessionToken);
   isHost = false;
   isMultiplayer = true;
   localPlayerIndex = 1;
   remotePlayerIndex = 0;
   showMpLobby();
+}
+
+function onResumeRoom(data) {
+  logMP('[RESUME_ROOM]', data);
+  currentRoomCode = data.code;
+  mpSetStatus('Ripresa stanza ' + currentRoomCode, 'success');
+  // Re-subscribe agli eventi di gioco e sincronizza UI
+  if (inLobby) {
+    showMpLobby();
+  }
 }
 
 function onLobbyUpdate(data) {
@@ -167,14 +214,12 @@ function onSnapshot(data) {
     const pi = pData.id === localPlayerId ? localPlayerIndex : remotePlayerIndex;
     if (p[pi]) {
       const pp = p[pi];
-      // Se è il player remoto, aggiorna direttamente
       if (pi === remotePlayerIndex) {
         pp.x = pData.x; pp.y = pData.y; pp.vx = pData.vx; pp.vy = pData.vy;
         pp.facing = pData.f; pp.onGround = pData.g; pp.crouching = pData.c;
         pp.atkT = pData.at; pp.atkAnim = pData.aa; pp.damage = pData.d;
         pp.stocks = pData.s; pp.isDead = pData.dead;
       }
-      // Se è il player locale, potresti fare reconciliation qui
     }
   });
 }
@@ -260,6 +305,7 @@ function showMpLobby() {
     </div>
   `;
   document.body.appendChild(lobbyEl);
+  updateLobbyUI();
 }
 
 function updateLobbyUI() {
@@ -336,6 +382,26 @@ function showCountdown(sec) {
   }, 1000);
 }
 
+function showReconnectingOverlay() {
+  if (document.getElementById('mp-reconnecting')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'mp-reconnecting';
+  overlay.className = 'mp-reconnecting-overlay';
+  overlay.innerHTML = `
+    <div class="mp-reconnecting-box">
+      <div class="mp-reconnecting-spinner"></div>
+      <div class="mp-reconnecting-text">Riconnessione in corso...</div>
+      <div class="mp-reconnecting-ping" id="mp-reconnecting-ping">Ping: --ms</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+function hideReconnectingOverlay() {
+  const overlay = document.getElementById('mp-reconnecting');
+  if (overlay) overlay.remove();
+}
+
 function sendPlayerMove() {
   if (!isMultiplayer || !socket || !socket.connected || !started) return;
   if (!p[localPlayerIndex]) return;
@@ -350,12 +416,6 @@ function sendPlayerMove() {
     atkT: pp.atkT, atkAnim: pp.atkAnim,
     damage: pp.damage, stocks: pp.stocks, isDead: pp.isDead,
   });
-}
-
-function onPowerUsed(pi) {
-  if (!isMultiplayer || pi !== localPlayerIndex) return;
-  if (!socket || !socket.connected) return;
-  socket.emit('use_ability', { abilityType: p[pi].ch.powType });
 }
 
 function updateMultiplayer() {
@@ -376,6 +436,10 @@ function startPing() {
         el.textContent = 'Ping: ' + currentPing + 'ms';
         el.style.color = connectionQuality === 'good' ? '#00ff88' : connectionQuality === 'fair' ? '#ffcc00' : '#ff4444';
       }
+      const reconEl = document.getElementById('mp-reconnecting-ping');
+      if (reconEl) {
+        reconEl.textContent = 'Ping: ' + currentPing + 'ms';
+      }
     });
   }, 3000);
 }
@@ -391,10 +455,11 @@ function getConnectionQuality(){ return connectionQuality; }
 
 function disconnectMultiplayer() {
   stopPing();
+  hideReconnectingOverlay();
   if (socket) { socket.disconnect(); socket = null; }
   isMultiplayer = false; currentRoomCode = null;
   localPlayerIndex = null; remotePlayerIndex = null; reconnectAttempts = 0;
   isHost = false; localPlayerId = null; inLobby = false;
 }
 
-console.log('[MULTIPLAYER v5.1] Modulo caricato — Tick Loop 60Hz');
+console.log('[MULTIPLAYER v5.2] Modulo caricato — Resilienza Massima');

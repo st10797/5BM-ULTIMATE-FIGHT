@@ -1,14 +1,13 @@
 /**
- * server.js — Battaglia Navale Smash Backend v5.1
- * PvP Online Realistico: Server-Authoritative, Tick Loop 60Hz, Lobby/Ready
+ * server.js — Battaglia Navale Smash Backend v5.2
+ * PvP Online Realistico: Session Recovery, ConnectionStateRecovery, Resilienza Massima
  *
- * FLUSSO v5.1:
- * 1. room:create -> CREATED -> LOBBY (host)
- * 2. room:join -> LOBBY (guest) -> lobby:update (entrambi)
- * 3. lobby:ready -> allReady? -> COUNTDOWN -> match:init {seed, startAt}
- * 4. startAt -> IN_MATCH -> Tick Loop 60Hz -> snapshot 20Hz
- *
- * STATI: CREATED → WAITING_FOR_PLAYER → LOBBY → COUNTDOWN → IN_MATCH → ENDED|CANCELLED|TIMEOUT
+ * RESILIENZA v5.2:
+ * - Session token persistente (localStorage client)
+ * - ConnectionStateRecovery per ripresa post-disconnessione
+ * - Ping/Pong stretti (10s interval, 5s timeout)
+ * - Auto-room rejoin tramite session ticket
+ * - Transports fallback: ['websocket', 'polling']
  */
 'use strict';
 
@@ -25,6 +24,8 @@ const ROOM_TIMEOUT_MS  = 120 * 1000;
 const CLEANUP_INTERVAL = 5 * 60 * 1000;
 const TICK_RATE        = 60;
 const SNAPSHOT_RATE    = 20;
+const PING_INTERVAL    = 10000;
+const PING_TIMEOUT     = 5000;
 
 function log(level, tag, msg, extra) {
   const ts  = new Date().toISOString();
@@ -54,6 +55,13 @@ function isOriginAllowed(origin) {
 const io = socketIo(server, {
   cors: { origin: isOriginAllowed, methods: ['GET', 'POST'], credentials: true },
   transports: ['websocket', 'polling'],
+  pingInterval: PING_INTERVAL,
+  pingTimeout: PING_TIMEOUT,
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 30000,
+    skipMiddlewares: false
+  },
+  allowEIO3: true,
 });
 
 app.use(cors({ origin: isOriginAllowed, credentials: true }));
@@ -61,10 +69,12 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../battaglia_navale_smash')));
 
 const rooms = new Map();
+const sessions = new Map();
 const socketsToRoom = new Map();
 const socketsToPlayer = new Map();
 
 const makeCode = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+const makeToken = () => Math.random().toString(36).slice(2, 16) + Date.now().toString(36);
 const now = () => Date.now();
 
 const broadcastLobby = (room) => {
@@ -88,7 +98,6 @@ function startGameLoop(code) {
     const t = now();
     if (t - lastSnap >= snapshotMs) {
       lastSnap = t;
-      // Snapshot minimale dello stato giocatori
       const snapshot = Object.values(room.players).map(p => ({
         id: p.id, x: p.x, y: p.y, vx: p.vx, vy: p.vy, 
         f: p.facing, g: p.onGround, c: p.crouching, 
@@ -99,8 +108,46 @@ function startGameLoop(code) {
   }, tickMs);
 }
 
+// Middleware: Validazione Session Token
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  if (!token) {
+    // Genera nuovo token se non presente
+    const newToken = makeToken();
+    sessions.set(newToken, { playerId: null, lastRoom: null, updatedAt: now() });
+    socket.handshake.auth = { token: newToken };
+    return next();
+  }
+  
+  let sess = sessions.get(String(token));
+  if (!sess) {
+    // Token scaduto o non valido: crea nuova sessione
+    sess = { playerId: null, lastRoom: null, updatedAt: now() };
+    sessions.set(String(token), sess);
+  }
+  sess.updatedAt = now();
+  socket.sessionToken = String(token);
+  socket.session = sess;
+  return next();
+});
+
 io.on('connection', (socket) => {
-  logInfo('CONNECT', `Socket ${socket.id} connesso`);
+  const token = socket.sessionToken;
+  const sess = socket.session;
+  
+  logInfo('CONNECT', `Socket ${socket.id} connesso con token ${token.slice(0, 8)}...`);
+  
+  // Resume automatico: se avevamo lastRoom, rientra
+  if (sess.lastRoom) {
+    const room = rooms.get(sess.lastRoom);
+    if (room && room.state !== 'ENDED') {
+      socket.join(sess.lastRoom);
+      socketsToRoom.set(socket.id, sess.lastRoom);
+      socket.emit('resume:room', { code: sess.lastRoom });
+      broadcastLobby(room);
+      logInfo('RESUME', `Socket ${socket.id} ripreso in stanza ${sess.lastRoom}`);
+    }
+  }
 
   // CREATE ROOM
   socket.on('room:create', ({ playerId, name }) => {
@@ -118,8 +165,11 @@ io.on('connection', (socket) => {
     rooms.set(code, room);
     socketsToRoom.set(socket.id, code);
     socketsToPlayer.set(socket.id, playerId);
+    sess.playerId = playerId;
+    sess.lastRoom = code;
+    sess.updatedAt = now();
     socket.join(code);
-    socket.emit('room:created', { code });
+    socket.emit('room:created', { code, token });
     broadcastLobby(room);
     logInfo('ROOM', `Stanza ${code} creata da ${playerId}`);
   });
@@ -136,8 +186,11 @@ io.on('connection', (socket) => {
     room.state = 'LOBBY';
     socketsToRoom.set(socket.id, code);
     socketsToPlayer.set(socket.id, playerId);
+    sess.playerId = playerId;
+    sess.lastRoom = code;
+    sess.updatedAt = now();
     socket.join(code);
-    socket.emit('room:joined', { code });
+    socket.emit('room:joined', { code, token });
     broadcastLobby(room);
     logInfo('ROOM', `Giocatore ${playerId} join stanza ${code}`);
   });
@@ -193,7 +246,6 @@ io.on('connection', (socket) => {
     const room = rooms.get(code);
     if (!room || room.state !== 'IN_MATCH') return;
     
-    // Aggiorna stato locale del player nel server (mock per ora, il loop userà questi dati)
     const p = room.players[playerId];
     if (p && data) {
       if (data.x !== undefined) p.x = data.x;
@@ -211,8 +263,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  // PING/PONG per heartbeat
+  socket.on('ping', (callback) => {
+    if (typeof callback === 'function') {
+      callback({ pong: true, ts: now() });
+    }
+  });
+
   // DISCONNECT
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
     const code = socketsToRoom.get(socket.id);
     const playerId = socketsToPlayer.get(socket.id);
     if (!code || !playerId) return;
@@ -230,9 +289,61 @@ io.on('connection', (socket) => {
     }
     socketsToRoom.delete(socket.id);
     socketsToPlayer.delete(socket.id);
+    logWarn('DISCONNECT', `Socket ${socket.id} disconnesso (${reason})`);
   });
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', rooms: rooms.size, clients: io.engine.clientsCount }));
+// Cleanup stanze inattive
+setInterval(() => {
+  const now_time = now();
+  for (const [code, room] of rooms.entries()) {
+    if (now_time - room.createdAt > ROOM_TIMEOUT_MS && room.state !== 'IN_MATCH') {
+      rooms.delete(code);
+      logWarn('CLEANUP', `Stanza ${code} eliminata (timeout)`);
+    }
+  }
+  // Cleanup sessioni scadute (> 1 ora)
+  for (const [token, sess] of sessions.entries()) {
+    if (now_time - sess.updatedAt > 3600000) {
+      sessions.delete(token);
+    }
+  }
+}, CLEANUP_INTERVAL);
 
-server.listen(PORT, '0.0.0.0', () => logInfo('SERVER', `Backend v5.1 in ascolto su porta ${PORT}`));
+app.get('/api/health', (req, res) => {
+  const uptime = process.uptime();
+  const memUsage = process.memoryUsage();
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(uptime),
+    memory: {
+      heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+      heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+    },
+    rooms: rooms.size,
+    sessions: sessions.size,
+    activeSockets: io.engine.clientsCount,
+  });
+});
+
+function gracefulShutdown() {
+  logInfo('SHUTDOWN', 'Graceful shutdown in corso...');
+  io.emit('server:shutdown', { message: 'Server in manutenzione. Riconnessione automatica in 30s.' });
+  setTimeout(() => {
+    io.close();
+    server.close(() => {
+      logInfo('SHUTDOWN', 'Server chiuso');
+      process.exit(0);
+    });
+  }, 2000);
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+server.listen(PORT, '0.0.0.0', () => {
+  logInfo('SERVER', `Backend v5.2 in ascolto su porta ${PORT}`);
+  logInfo('SERVER', `Ambiente: ${NODE_ENV}`);
+  logInfo('CONFIG', `Ping: ${PING_INTERVAL}ms, Timeout: ${PING_TIMEOUT}ms`);
+});
