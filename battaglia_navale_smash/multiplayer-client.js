@@ -1,14 +1,12 @@
 /**
- * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v5.0
- * PvP Online Realistico: API REST + WebSocket, Transizioni Automatiche, QR Code
+ * multiplayer-client.js — Battaglia Navale Smash Client Multiplayer v5.1
+ * PvP Online Realistico: Server-Authoritative, Tick Loop 60Hz, Lobby/Ready
  *
- * FLUSSO v5.0:
- * 1. POST /rooms → crea stanza, mostra UI Waiting con QR + Countdown
- * 2. WS subscribe_room → host sottoscritto
- * 3. Guest POST /rooms/{code}/join → PLAYER_JOINED event
- * 4. Transizione automatica → SelezionePersonaggi
- * 5. select_character → PLAYER_CHAR_SELECTED + MATCH_READY
- * 6. start_game → GAME_STARTED
+ * FLUSSO v5.1:
+ * 1. room:create -> CREATED -> LOBBY (host)
+ * 2. room:join -> LOBBY (guest) -> lobby:update (entrambi)
+ * 3. lobby:ready -> allReady? -> COUNTDOWN -> match:init {seed, startAt}
+ * 4. startAt -> IN_MATCH -> Tick Loop 60Hz -> snapshot 20Hz
  */
 
 let socket            = null;
@@ -16,16 +14,19 @@ let isMultiplayer     = false;
 let currentRoomCode   = null;
 let localPlayerIndex  = null;
 let remotePlayerIndex = null;
-let isHost            = false;
 let localPlayerId     = null;
+let isHost            = false;
+let currentTick       = 0;
 let lastUpdateTime    = 0;
-const UPDATE_INTERVAL = 33;
+const UPDATE_INTERVAL = 16; // ~60Hz
 let currentPing       = 0;
 let pingIv            = null;
 let reconnectAttempts = 0;
 let connectionQuality = 'good';
-let roomCountdown     = 120;
-let countdownInterval = null;
+let inLobby           = false;
+let lobbyPlayers      = [];
+let matchSeed         = null;
+let matchStartAt      = null;
 
 const BACKEND_URL = window.BACKEND_URL || 'https://fivebm-ultimate-fight.onrender.com';
 
@@ -55,21 +56,18 @@ function initSocket() {
   socket.on('connect',                onSocketConnect);
   socket.on('disconnect',             onSocketDisconnect);
   socket.on('connect_error',          onSocketError);
-  socket.on('PLAYER_JOINED',          onPlayerJoined);
-  socket.on('PLAYER_CHAR_SELECTED',   onPlayerCharSelected);
-  socket.on('MATCH_READY',            onMatchReady);
-  socket.on('GAME_STARTED',           onGameStarted);
-  socket.on('GAME_ENDED',             onGameEnded);
-  socket.on('PLAYER_MOVED',           onPlayerMoved);
-  socket.on('ABILITY_USED',           onAbilityUsed);
-  socket.on('PLAYER_LEFT',            onPlayerLeft);
-  socket.on('ROOM_TIMEOUT',           onRoomTimeout);
-  socket.on('ROOM_CANCELLED',         onRoomCancelled);
-  socket.on('ERROR',                  onServerError);
+  socket.on('room:created',           onRoomCreated);
+  socket.on('room:joined',            onRoomJoined);
+  socket.on('lobby:update',           onLobbyUpdate);
+  socket.on('match:init',             onMatchInit);
+  socket.on('match:start',            onMatchStart);
+  socket.on('snapshot',               onSnapshot);
+  socket.on('player:left',            onPlayerLeft);
+  socket.on('room:cancelled',         onRoomCancelled);
+  socket.on('error',                  onServerError);
   socket.on('reconnect_attempt',      onReconnectAttempt);
   socket.on('reconnect',              onReconnect);
   socket.on('reconnect_failed',       onReconnectFailed);
-  socket.on('SERVER_SHUTDOWN',        onServerShutdown);
   return true;
 }
 
@@ -113,11 +111,7 @@ function onReconnect(attempt) {
   mpSetStatus('Riconnesso al server', 'success');
   startPing();
   if (currentRoomCode && socket) {
-    socket.emit('subscribe_room', { code: currentRoomCode }, (res) => {
-      if (res && res.success) {
-        logMP('[REJOIN] Riaccesso a stanza:', currentRoomCode);
-      }
-    });
+    socket.emit('room:join', { code: currentRoomCode, playerId: localPlayerId, name: document.getElementById('mp-name')?.value?.trim() || 'Giocatore' });
   }
 }
 
@@ -125,69 +119,64 @@ function onReconnectFailed() {
   mpSetStatus('Impossibile riconnettersi. Ricarica la pagina.', 'error');
 }
 
-function onServerShutdown(data) {
-  mpSetStatus((data && data.message) ? data.message : 'Server in riavvio...', 'warn');
+function onRoomCreated(data) {
+  logMP('[ROOM_CREATED]', data);
+  currentRoomCode = data.code;
+  isHost = true;
+  isMultiplayer = true;
+  localPlayerIndex = 0;
+  remotePlayerIndex = 1;
+  showMpLobby();
 }
 
-function onPlayerJoined(data) {
-  logMP('[PLAYER_JOINED]', data);
-  mpSetStatus('Avversario trovato!', 'success');
-  stopCountdown();
-  setTimeout(() => showMpCharSelect(), 500);
+function onRoomJoined(data) {
+  logMP('[ROOM_JOINED]', data);
+  currentRoomCode = data.code;
+  isHost = false;
+  isMultiplayer = true;
+  localPlayerIndex = 1;
+  remotePlayerIndex = 0;
+  showMpLobby();
 }
 
-function onPlayerCharSelected(data) {
-  logMP('[PLAYER_CHAR_SELECTED]', data);
-  if (data.playerIndex === remotePlayerIndex) {
-    if (data.playerIndex === 0) sel1 = data.character;
-    else sel2 = data.character;
-    updateSelUI();
-  }
+function onLobbyUpdate(data) {
+  logMP('[LOBBY_UPDATE]', data);
+  lobbyPlayers = data.players;
+  inLobby = true;
+  updateLobbyUI();
 }
 
-function onMatchReady(data) {
-  logMP('[MATCH_READY]', data);
-  mpSetStatus('Entrambi pronti! Inizia il combattimento...', 'success');
-  setTimeout(() => startGame(), 1000);
+function onMatchInit(data) {
+  logMP('[MATCH_INIT]', data);
+  matchSeed = data.seed;
+  matchStartAt = data.startAt;
+  mpSetStatus('Inizio tra: ' + data.countdown + 's', 'success');
+  showCountdown(data.countdown);
 }
 
-function onGameStarted(data) {
-  logMP('[GAME_STARTED]', data);
-  if (!sel1 || !sel2) { sel1 = sel1 || 'Brutus'; sel2 = sel2 || 'Tornari'; }
+function onMatchStart(data) {
+  logMP('[MATCH_START]', data);
   startGame();
 }
 
-function onGameEnded(data) {
-  logMP('[GAME_ENDED]', data);
-  const winnerIndex = data.winnerId ? (data.winnerId === localPlayerId ? localPlayerIndex : remotePlayerIndex) : -1;
-  if (winnerIndex >= 0) {
-    showResult(winnerIndex === 0 ? sel1 : sel2);
-  }
-}
-
-function onPlayerMoved(data) {
-  if (!p || !p[remotePlayerIndex]) return;
-  const pp = p[remotePlayerIndex];
-  const d  = data.data || data;
-  if (!d) return;
-  if (typeof d.x   === 'number' && isFinite(d.x))  pp.x  = d.x;
-  if (typeof d.y   === 'number' && isFinite(d.y))  pp.y  = d.y;
-  if (typeof d.vx  === 'number' && isFinite(d.vx)) pp.vx = d.vx;
-  if (typeof d.vy  === 'number' && isFinite(d.vy)) pp.vy = d.vy;
-  if (d.facing    !== undefined) pp.facing    = !!d.facing;
-  if (d.onGround  !== undefined) pp.onGround  = !!d.onGround;
-  if (d.crouching !== undefined) pp.crouching = !!d.crouching;
-  if (typeof d.atkT    === 'number') pp.atkT   = d.atkT;
-  if (typeof d.atkAnim === 'string') pp.atkAnim = d.atkAnim;
-  if (typeof d.damage  === 'number' && d.damage >= 0) pp.damage = d.damage;
-  if (typeof d.stocks  === 'number' && d.stocks >= 0) pp.stocks = d.stocks;
-  if (d.isDead !== undefined) pp.isDead = !!d.isDead;
-}
-
-function onAbilityUsed(data) {
-  if (data.playerIndex === remotePlayerIndex && p[remotePlayerIndex]) {
-    usePower(remotePlayerIndex);
-  }
+function onSnapshot(data) {
+  if (!isMultiplayer || !started) return;
+  currentTick = data.tick;
+  const snapshot = data.snapshot;
+  snapshot.forEach(pData => {
+    const pi = pData.id === localPlayerId ? localPlayerIndex : remotePlayerIndex;
+    if (p[pi]) {
+      const pp = p[pi];
+      // Se è il player remoto, aggiorna direttamente
+      if (pi === remotePlayerIndex) {
+        pp.x = pData.x; pp.y = pData.y; pp.vx = pData.vx; pp.vy = pData.vy;
+        pp.facing = pData.f; pp.onGround = pData.g; pp.crouching = pData.c;
+        pp.atkT = pData.at; pp.atkAnim = pData.aa; pp.damage = pData.d;
+        pp.stocks = pData.s; pp.isDead = pData.dead;
+      }
+      // Se è il player locale, potresti fare reconciliation qui
+    }
+  });
 }
 
 function onPlayerLeft(data) {
@@ -195,12 +184,6 @@ function onPlayerLeft(data) {
   mpSetStatus('L\'avversario ha abbandonato la partita', 'warn');
   isMultiplayer = false;
   if (started) { showResult(localPlayerIndex === 0 ? sel1 : sel2); }
-}
-
-function onRoomTimeout(data) {
-  logMP('[ROOM_TIMEOUT]', data);
-  mpSetStatus('Stanza scaduta: nessun giocatore ha fatto il join.', 'warn');
-  setTimeout(() => showTitle(), 2000);
 }
 
 function onRoomCancelled(data) {
@@ -232,7 +215,7 @@ function mpSetStatus(msg, type = 'info') {
   el.className = 'mp-status mp-status-' + type;
 }
 
-async function mpCreateRoom() {
+function mpCreateRoom() {
   if (!socket || !socket.connected) {
     mpSetStatus('Non connesso al server. Attendi...', 'error');
     if (!socket) initSocket();
@@ -240,37 +223,10 @@ async function mpCreateRoom() {
   }
   const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
   localPlayerId = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-  mpSetStatus('Creazione stanza...', 'info');
-  try {
-    const res = await fetch(BACKEND_URL + '/rooms', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostId: localPlayerId, hostName: playerName }),
-    });
-    const data = await res.json();
-    if (!data.success) {
-      mpSetStatus('Errore: ' + (data.message || 'risposta non valida'), 'error');
-      return;
-    }
-    currentRoomCode = data.code;
-    localPlayerIndex = 0;
-    remotePlayerIndex = 1;
-    isHost = true;
-    isMultiplayer = true;
-    socket.emit('subscribe_room', { code: currentRoomCode }, (res) => {
-      if (res && res.success) {
-        logMP('[CREATE] Stanza creata:', currentRoomCode);
-        showMpWaitingRoom();
-        startCountdown();
-      }
-    });
-  } catch (err) {
-    mpSetStatus('Errore rete: ' + err.message, 'error');
-    logMP('[ERROR]', err);
-  }
+  socket.emit('room:create', { playerId: localPlayerId, name: playerName });
 }
 
-async function mpJoinRoom() {
+function mpJoinRoom() {
   if (!socket || !socket.connected) {
     mpSetStatus('Non connesso al server. Attendi...', 'error');
     if (!socket) initSocket();
@@ -281,97 +237,49 @@ async function mpJoinRoom() {
   if (!code || code.length < 4) { mpSetStatus('Inserisci un codice stanza valido (4 caratteri).', 'warn'); return; }
   const playerName = document.getElementById('mp-name')?.value?.trim() || 'Giocatore';
   localPlayerId = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-  mpSetStatus('Accesso alla stanza ' + code + '...', 'info');
-  try {
-    const res = await fetch(BACKEND_URL + '/rooms/' + code + '/join', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guestId: localPlayerId, guestName: playerName }),
-    });
-    const data = await res.json();
-    if (!data.success) {
-      mpSetStatus('Errore: ' + (data.message || 'risposta non valida'), 'error');
-      return;
-    }
-    currentRoomCode = code;
-    localPlayerIndex = 1;
-    remotePlayerIndex = 0;
-    isHost = false;
-    isMultiplayer = true;
-    socket.emit('subscribe_room', { code: currentRoomCode }, (res) => {
-      if (res && res.success) {
-        logMP('[JOIN] Accesso a stanza:', currentRoomCode);
-        mpSetStatus('Entrato nella stanza! Scegli il personaggio.', 'success');
-        showMpCharSelect();
-      }
-    });
-  } catch (err) {
-    mpSetStatus('Errore rete: ' + err.message, 'error');
-    logMP('[ERROR]', err);
-  }
+  socket.emit('room:join', { code, playerId: localPlayerId, name: playerName });
 }
 
-function showMpWaitingRoom() {
+function showMpLobby() {
   hideAll();
-  const waitingEl = document.createElement('div');
-  waitingEl.id = 'mp-waiting-room';
-  waitingEl.className = 'screen';
-  waitingEl.innerHTML = `
-    <div class="mp-waiting-container">
-      <div class="mp-waiting-title">In attesa dell'avversario...</div>
+  const lobbyEl = document.createElement('div');
+  lobbyEl.id = 'mp-lobby';
+  lobbyEl.className = 'screen';
+  lobbyEl.innerHTML = `
+    <div class="mp-lobby-container">
+      <div class="mp-lobby-title">LOBBY MULTIPLAYER</div>
       <div class="mp-room-code-display" id="mp-code-display">${currentRoomCode}</div>
-      <button class="mp-action-btn" onclick="mpCopyCode()">📋 Copia Codice</button>
-      <div class="mp-qr-placeholder" id="mp-qr">QR Code</div>
-      <div class="mp-countdown" id="mp-countdown">Scade tra: 120s</div>
-      <button class="res-btn" onclick="mpCancelRoom()">Annulla</button>
+      <div class="mp-players-list" id="mp-players-list"></div>
+      <div class="mp-char-select-btn" id="mp-char-select-btn">
+        <button class="mp-action-btn" onclick="showMpCharSelect()">SCEGLI PERSONAGGIO</button>
+      </div>
+      <div class="mp-ready-btn" id="mp-ready-btn" style="display:none">
+        <button class="mp-action-btn" onclick="mpReady()">SONO PRONTO!</button>
+      </div>
+      <button class="res-btn" onclick="showTitle()">Esci</button>
     </div>
   `;
-  document.body.appendChild(waitingEl);
+  document.body.appendChild(lobbyEl);
 }
 
-function mpCopyCode() {
-  if (!currentRoomCode) return;
-  navigator.clipboard.writeText(currentRoomCode).then(() => {
-    mpSetStatus('Codice copiato negli appunti!', 'success');
-  }).catch(() => {
-    mpSetStatus('Errore copia codice', 'error');
+function updateLobbyUI() {
+  const list = document.getElementById('mp-players-list');
+  if (!list) return;
+  list.innerHTML = '';
+  lobbyPlayers.forEach(p => {
+    const pEl = document.createElement('div');
+    pEl.className = 'mp-player-item';
+    pEl.innerHTML = `
+      <span class="mp-p-name">${p.name} ${p.id === localPlayerId ? '(TU)' : ''}</span>
+      <span class="mp-p-char">${p.character ? CHARS[p.character].em + ' ' + CHARS[p.character].nome : 'Scegliendo...'}</span>
+      <span class="mp-p-ready ${p.ready ? 'ready' : ''}">${p.ready ? 'PRONTO' : '...'}</span>
+    `;
+    list.appendChild(pEl);
   });
-}
-
-async function mpCancelRoom() {
-  if (!currentRoomCode || !isHost) return;
-  try {
-    await fetch(BACKEND_URL + '/rooms/' + currentRoomCode, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostId: localPlayerId }),
-    });
-    mpSetStatus('Stanza cancellata', 'info');
-    setTimeout(() => showTitle(), 1000);
-  } catch (err) {
-    mpSetStatus('Errore cancellazione stanza', 'error');
-  }
-}
-
-function startCountdown() {
-  roomCountdown = 120;
-  if (countdownInterval) clearInterval(countdownInterval);
-  countdownInterval = setInterval(() => {
-    roomCountdown--;
-    const el = document.getElementById('mp-countdown');
-    if (el) el.textContent = 'Scade tra: ' + roomCountdown + 's';
-    if (roomCountdown <= 0) {
-      stopCountdown();
-      mpSetStatus('Stanza scaduta', 'warn');
-      setTimeout(() => showTitle(), 2000);
-    }
-  }, 1000);
-}
-
-function stopCountdown() {
-  if (countdownInterval) {
-    clearInterval(countdownInterval);
-    countdownInterval = null;
+  
+  const localP = lobbyPlayers.find(p => p.id === localPlayerId);
+  if (localP && localP.character) {
+    document.getElementById('mp-ready-btn').style.display = 'block';
   }
 }
 
@@ -392,17 +300,51 @@ function mpSelectCharacter(charId) {
   if (localPlayerIndex === 0) sel1 = charId;
   else sel2 = charId;
   updateSelUI();
-  socket.emit('select_character', { character: charId });
+  socket.emit('lobby:char', { character: charId });
+  setTimeout(() => {
+    const lobby = document.getElementById('mp-lobby');
+    if (lobby) {
+      hideAll();
+      lobby.classList.remove('hidden');
+      updateLobbyUI();
+    }
+  }, 1000);
+}
+
+function mpReady() {
+  if (!socket || !socket.connected) return;
+  socket.emit('lobby:ready');
+  document.getElementById('mp-ready-btn').style.display = 'none';
+}
+
+function showCountdown(sec) {
+  const cdEl = document.createElement('div');
+  cdEl.id = 'mp-countdown-overlay';
+  cdEl.className = 'mp-countdown-overlay';
+  cdEl.innerHTML = `<div class="mp-cd-num">${sec}</div>`;
+  document.body.appendChild(cdEl);
+  
+  let current = sec;
+  const int = setInterval(() => {
+    current--;
+    if (current <= 0) {
+      clearInterval(int);
+      cdEl.remove();
+    } else {
+      cdEl.querySelector('.mp-cd-num').textContent = current;
+    }
+  }, 1000);
 }
 
 function sendPlayerMove() {
-  if (!isMultiplayer || !socket || !socket.connected) return;
+  if (!isMultiplayer || !socket || !socket.connected || !started) return;
   if (!p[localPlayerIndex]) return;
   const now = Date.now();
   if (now - lastUpdateTime < UPDATE_INTERVAL) return;
   lastUpdateTime = now;
   const pp = p[localPlayerIndex];
-  socket.emit('player_move', {
+  socket.emit('input', {
+    tick: currentTick,
     x: pp.x, y: pp.y, vx: pp.vx, vy: pp.vy,
     facing: pp.facing, onGround: pp.onGround, crouching: pp.crouching,
     atkT: pp.atkT, atkAnim: pp.atkAnim,
@@ -449,11 +391,10 @@ function getConnectionQuality(){ return connectionQuality; }
 
 function disconnectMultiplayer() {
   stopPing();
-  stopCountdown();
   if (socket) { socket.disconnect(); socket = null; }
   isMultiplayer = false; currentRoomCode = null;
   localPlayerIndex = null; remotePlayerIndex = null; reconnectAttempts = 0;
-  isHost = false; localPlayerId = null;
+  isHost = false; localPlayerId = null; inLobby = false;
 }
 
-console.log('[MULTIPLAYER v5.0] Modulo caricato — PvP Online Realistico');
+console.log('[MULTIPLAYER v5.1] Modulo caricato — Tick Loop 60Hz');
